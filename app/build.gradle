@@ -1,0 +1,56 @@
+plugins {
+    id "com.android.application"
+}
+
+def buildVersionName = providers.gradleProperty("p2premoteClientVersion").orElse("0.2.0").get()
+
+android {
+    namespace "top.p2premote.android"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "top.p2premote.android"
+        // minSdk 29 (Android 10): 系统原生支持 TLS 1.3，无需 Conscrypt/ISRG Root X1 兼容层。
+        minSdk 29
+        targetSdk 35
+        versionCode 2
+        versionName buildVersionName
+
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    buildTypes {
+        release {
+            // 启用 R8 代码裁剪/混淆。gomobile 绑定类通过 JNI 反射调用，
+            // 必须用 proguard-rules.pro keep 保护，否则 release 包必崩。
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+}
+
+// 测速使用独立的 Rust riperf3 JNI 库；只构建 app 时自动确保两个 ABI 都存在。
+tasks.register("buildRiperf3Native", Exec) {
+    workingDir rootProject.projectDir
+    commandLine "powershell", "-ExecutionPolicy", "Bypass", "-File",
+            "scripts/build-riperf3-native.ps1"
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(tasks.named("buildRiperf3Native"))
+}
+
+dependencies {
+    implementation fileTree(dir: "libs", include: ["*.aar"])
+    // 支持主动发送协议 Ping 并接收 Pong 回调；用于与桌面端一致的 WS 就绪状态机。
+    implementation "org.java-websocket:Java-WebSocket:1.6.0"
+    testImplementation "junit:junit:4.13.2"
+}

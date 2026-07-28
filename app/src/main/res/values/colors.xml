@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 品牌色：主操作、选中态、链接 -->
+    <color name="brand">#FF2563EB</color>
+    <color name="brand_dark">#FF1E3A8A</color>
+    <color name="brand_bg">#FFEFF6FF</color>
+    <color name="brand_border">#FFBFDBFE</color>
+    <color name="brand_nav_bg">#FFE8F0FF</color>
+
+    <!-- 语义状态色 -->
+    <color name="online">#FF16A34A</color>
+    <color name="online_bg">#FFDCFCE7</color>
+    <color name="danger">#FFDC2626</color>
+    <color name="danger_bg">#FFFEE2E2</color>
+    <color name="warn">#FFF59E0B</color>
+    <color name="warn_bg">#FFFEF3C7</color>
+
+    <!-- 文本层级 -->
+    <color name="text_primary">#FF0F172A</color>
+    <color name="text_secondary">#FF334155</color>
+    <color name="text_muted">#FF64748B</color>
+    <color name="text_placeholder">#FF94A3B8</color>
+
+    <!-- 背景与表面 -->
+    <color name="bg_page">#FFF4F7FB</color>
+    <color name="bg_status_bar">#FFF4F7FB</color>
+    <color name="surface_card">#FFFFFFFF</color>
+
+    <!-- 边框与禁用 -->
+    <color name="border">#FFE2E8F0</color>
+    <color name="border_input">#FFCBD5E1</color>
+    <color name="disabled_bg">#FFE2E8F0</color>
+</resources>

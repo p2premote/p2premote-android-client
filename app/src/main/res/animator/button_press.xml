@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  按钮按压反馈（StateListAnimator）：按下时轻微下沉 + 缩放，抬起回弹。
+  动画走 RenderThread（z.translation），不阻塞主线程。配合 ripple 前景使用。
+  对齐 emil-design-eng「Buttons must feel responsive」与 apple-design §1「respond on pointer-down」。
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_enabled="true" android:state_pressed="true">
+        <objectAnimator
+            android:propertyName="translationZ"
+            android:duration="80"
+            android:valueTo="2dp"
+            android:valueType="floatType" />
+    </item>
+    <item android:state_enabled="true">
+        <objectAnimator
+            android:propertyName="translationZ"
+            android:duration="80"
+            android:valueTo="0dp"
+            android:valueType="floatType" />
+    </item>
+</selector>

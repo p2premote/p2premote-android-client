@@ -1,0 +1,17 @@
+# 构建产物
+app/build/
+build/
+.gradle/
+local.properties
+riperf3-native/target/
+app/src/main/jniLibs/**/*.so
+.idea/
+
+# 旧独立 AAR（已合并为 p2premote-wgvpn.aar）
+app/libs/p2plinkmobile*.aar
+app/libs/p2plinkmobile*.jar
+
+# wgvpn AAR：体积大（12MB）且随 gonc 改动频繁重生成，不入库。
+# 由相邻 p2premote-punch/build-android-aar.sh 按需构建后拷贝到此处。
+# 首次构建前 libs/ 不存在属正常，assembleDebug 会因找不到 AAR 报错，请先跑构建脚本。
+app/libs/p2premote-wgvpn.aar

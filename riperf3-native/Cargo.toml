@@ -1,0 +1,16 @@
+[package]
+name = "p2premote-riperf3-jni"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+# 独立于桌面 workspace：避免将 Windows/Linux service 代码带进 Android JNI 库。
+[workspace]
+
+[dependencies]
+jni = "0.21"
+riperf3 = "0.8"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
