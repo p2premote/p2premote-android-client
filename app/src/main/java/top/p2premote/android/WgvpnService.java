@@ -26,10 +26,12 @@ import org.json.JSONObject;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import libwgmobile.Keypair;
 import libwgmobile.Libwgmobile;
@@ -138,6 +140,8 @@ public final class WgvpnService extends VpnService {
     private static final int CODE_DEVICE_OFFLINE = 1054;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    /** 非 native 控制任务不能堵住断链清理队列（测速最长可等待 60 秒）。 */
+    private final ExecutorService controlExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService attemptCleanupExecutor = Executors.newSingleThreadExecutor();
     private ApiClient apiClient;
     private SessionStore sessionStore;
@@ -188,6 +192,10 @@ public final class WgvpnService extends VpnService {
     private final Map<Long, UnderlyingNetworkState> underlyingNetworks = new ConcurrentHashMap<>();
     private volatile boolean automaticRecoveryInProgress = false;
     private volatile boolean manualStopRequested = false;
+    /** 覆盖 ACTION_START 入队到 PREPARING 状态发布之间的窄窗口，避免重复启动排入第二个任务。 */
+    private final AtomicBoolean manualStartQueued = new AtomicBoolean(false);
+    /** 健康线程、系统回调和 UI 可能同时请求停止；只允许一个清理任务进入 native 串行队列。 */
+    private final AtomicBoolean stopQueued = new AtomicBoolean(false);
     private volatile long recoveryTargetDeviceId = 0;
     private volatile String recoveryTargetDeviceUuid = "";
     private volatile String recoveryTargetDeviceName = "";
@@ -258,19 +266,30 @@ public final class WgvpnService extends VpnService {
         if (ACTION_STOP.equals(action)) {
             manualStopRequested = true;
             cancelNetworkRecovery();
-            stopTunnel("用户已断开隧道");
+            enqueueStopTunnel("用户已断开隧道");
             return START_NOT_STICKY;
         }
         if (ACTION_QUERY.equals(action)) {
             // Activity 配置变更重建后查询当前状态：直接回放一次最新状态广播。
             emitStatusOnly();
+            // startService 查询会把原本未运行的 Service 置为 started。若没有隧道任务，
+            // 必须结束这次启动，否则网络 callback 与 executor 会常驻到进程被杀。
+            stopIfNoTunnelWork(startId);
             return START_NOT_STICKY;
         }
         if (ACTION_TEST_SPEED.equals(action)) {
             startSpeedTest();
+            stopIfNoTunnelWork(startId);
             return START_NOT_STICKY;
         }
         if (ACTION_START.equals(action)) {
+            if (TunnelState.isActive(activeState) || automaticRecoveryInProgress
+                    || !manualStartQueued.compareAndSet(false, true)) {
+                // startService 可能因双击、Activity 重建或重试被重复调用。已有隧道时只回放状态，
+                // 绝不能让第二个任务进入后把第一个活动隧道标成 FAILED 并 stopSelf。
+                emitStatusOnly();
+                return START_STICKY;
+            }
             long deviceId = intent.getLongExtra(EXTRA_DEVICE_ID, 0);
             String deviceUuid = intent.getStringExtra(EXTRA_DEVICE_UUID);
             String deviceName = intent.getStringExtra(EXTRA_DEVICE_NAME);
@@ -283,6 +302,12 @@ public final class WgvpnService extends VpnService {
             return START_STICKY;
         }
         return START_NOT_STICKY;
+    }
+
+    private void stopIfNoTunnelWork(int startId) {
+        if (TunnelState.isTerminal(activeState) && !automaticRecoveryInProgress) {
+            stopSelfResult(startId);
+        }
     }
 
     @Override
@@ -305,15 +330,27 @@ public final class WgvpnService extends VpnService {
         boolean alreadyTerminal = TunnelState.isTerminal(activeState);
         Log.i(TAG, "onDestroy: activeState=" + activeState
                 + (alreadyTerminal ? " (terminal, cleanup native only)" : " (active, full stopTunnel)"));
-        if (alreadyTerminal) {
-            stopTrafficPolling();
-            stopHealthClient();
-            cleanupNative();
-        } else {
-            stopTunnel("服务已停止");
+        stopTrafficPolling();
+        stopHealthClient();
+        if (!alreadyTerminal) {
+            connectedAtMs = 0;
+            resetTunnelCounters();
+            emit(TunnelState.STOPPED, "服务已停止", "", "", "");
+            stopForeground(true);
         }
-        Wgvpnmobile.setProtectCallback(null);
-        executor.shutdownNow();
+        // gomobile / WireGuard 的创建与销毁必须在同一个串行 executor 上发生。
+        // 系统可能在 native 调用尚未返回时销毁 Service；将最终清理排到队尾可避免
+        // wgStart/stopUdpTunnel/wgStop 并发访问 native 全局状态。shutdown() 会执行完队列。
+        try {
+            executor.execute(() -> {
+                cleanupNative();
+                Wgvpnmobile.setProtectCallback(null);
+            });
+        } catch (RejectedExecutionException e) {
+            Log.w(TAG, "native cleanup executor already closed", e);
+        }
+        executor.shutdown();
+        controlExecutor.shutdownNow();
         attemptCleanupExecutor.shutdownNow();
         super.onDestroy();
     }
@@ -323,7 +360,7 @@ public final class WgvpnService extends VpnService {
         // 用户在系统设置中撤销了 VPN 权限
         manualStopRequested = true;
         cancelNetworkRecovery();
-        stopTunnel("VPN 权限已被撤销");
+        enqueueStopTunnel("VPN 权限已被撤销");
         super.onRevoke();
     }
 
@@ -663,12 +700,11 @@ public final class WgvpnService extends VpnService {
                     targetDeviceUuid, "online", "", "", 3389);
             try {
                 Session session = sessionStore.require();
+                long accountGeneration = sessionStore.accountGeneration();
 
                 // 单隧道约束：已有活动隧道则拒绝（isActive 不含 STOPPED）。
                 if (!automaticRecovery && TunnelState.isActive(activeState)) {
-                    emit(TunnelState.FAILED, "已有活动隧道，请先断开", "", "", "");
-                    stopForeground(false);
-                    stopSelf();
+                    emitStatusOnly();
                     return;
                 }
                 ensureStartGeneration(expectedGeneration);
@@ -681,8 +717,8 @@ public final class WgvpnService extends VpnService {
                     Keypair kp = Libwgmobile.generateKeypair();
                     privateKeyHex = kp.getPrivateKeyHex();
                     publicKeyHex = kp.getPublicKeyHex();
-                    sessionStore.save(session.withWgKeypair(privateKeyHex, publicKeyHex));
-                    session = sessionStore.require();
+                    session = sessionStore.updateWgKeypairIfCurrent(
+                            accountGeneration, privateKeyHex, publicKeyHex);
                 }
 
                 // 步骤 2: 向服务端发起 p2p/open 鉴权（新协议，返回 connection_id/access_grant）
@@ -993,6 +1029,9 @@ public final class WgvpnService extends VpnService {
                 stopForeground(false);
                 stopSelf();
             } finally {
+                if (!automaticRecovery) {
+                    manualStartQueued.set(false);
+                }
                 if (attemptWs != null) {
                     attemptWs.setPeerNotifyListener(null);
                 }
@@ -1149,31 +1188,43 @@ public final class WgvpnService extends VpnService {
                 return;
             }
             try {
-                WgTransferStats stats = Libwgmobile.wgPeerTransferBytes(peerPubkeyHex);
-                if (stats != null && stats.getOK()) {
-                    long rx = stats.getRxBytes();
-                    long tx = stats.getTxBytes();
-                    // rekey 检测：计数器回绕（当前 < 上次）说明 WG 刚 rekey 清零，
-                    // 把当前值作为新基准；否则累加 delta。
-                    if (rx >= lastSampleRx) {
-                        cumulativeRx += rx - lastSampleRx;
-                    }
-                    if (tx >= lastSampleTx) {
-                        cumulativeTx += tx - lastSampleTx;
-                    }
-                    lastSampleRx = rx;
-                    lastSampleTx = tx;
-                    // 广播最新累计流量给 UI
-                    broadcastStatus(activeState, activeMessage);
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "traffic poll error: " + e.getMessage());
-            }
-            if (trafficPolling) {
-                trafficHandler.postDelayed(this, TRAFFIC_POLL_INTERVAL_MS);
+                executor.execute(WgvpnService.this::sampleTrafficAndReschedule);
+            } catch (RejectedExecutionException e) {
+                Log.w(TAG, "traffic poll stopped because native executor is closed");
             }
         }
     };
+
+    /** 查询统计也进入 native 串行队列，避免与 wgStop/wgRemovePeer 并发。 */
+    private void sampleTrafficAndReschedule() {
+        if (!trafficPolling || !wgRunning || peerPubkeyHex.isEmpty()) {
+            return;
+        }
+        try {
+            WgTransferStats stats = Libwgmobile.wgPeerTransferBytes(peerPubkeyHex);
+            if (stats != null && stats.getOK()) {
+                long rx = stats.getRxBytes();
+                long tx = stats.getTxBytes();
+                // rekey 检测：计数器回绕（当前 < 上次）说明 WG 刚 rekey 清零，
+                // 把当前值作为新基准；否则累加 delta。
+                if (rx >= lastSampleRx) {
+                    cumulativeRx += rx - lastSampleRx;
+                }
+                if (tx >= lastSampleTx) {
+                    cumulativeTx += tx - lastSampleTx;
+                }
+                lastSampleRx = rx;
+                lastSampleTx = tx;
+                // 广播最新累计流量给 UI
+                broadcastStatus(activeState, activeMessage);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "traffic poll error: " + e.getMessage());
+        }
+        if (trafficPolling) {
+            trafficHandler.postDelayed(trafficPollRunnable, TRAFFIC_POLL_INTERVAL_MS);
+        }
+    }
 
     /**
      * 启动隧道健康检查 TCP client（主动端角色）。
@@ -1235,8 +1286,8 @@ public final class WgvpnService extends VpnService {
                 String hello = "{\"t\":\"Hello\",\"c\":{\"source_device_id\":"
                         + sourceDeviceId + ",\"protocol_version\":"
                         + TUNNEL_CONTROL_PROTOCOL_VERSION + "}}";
-                writeBytesCodecFrame(out, hello);
-                byte[] ackBytes = readBytesCodecFrame(in);
+                HealthFrameCodec.write(out, hello);
+                byte[] ackBytes = HealthFrameCodec.read(in);
                 JSONObject ack = new JSONObject(new String(ackBytes, java.nio.charset.StandardCharsets.UTF_8));
                 if (!"HelloAck".equals(ack.optString("t", ""))) {
                     Log.w(TAG, "health unexpected hello ack: " + ack);
@@ -1259,8 +1310,8 @@ public final class WgvpnService extends VpnService {
                     }
                     long ts = System.currentTimeMillis();
                     String ping = "{\"t\":\"Ping\",\"c\":{\"ts\":" + ts + "}}";
-                    writeBytesCodecFrame(out, ping);
-                    byte[] pongBytes = readBytesCodecFrame(in);
+                    HealthFrameCodec.write(out, ping);
+                    byte[] pongBytes = HealthFrameCodec.read(in);
                     JSONObject pong = new JSONObject(new String(pongBytes, java.nio.charset.StandardCharsets.UTF_8));
                     JSONObject pongC = pong.optJSONObject("c");
                     if (!"Pong".equals(pong.optString("t", ""))
@@ -1320,7 +1371,9 @@ public final class WgvpnService extends VpnService {
             return;
         }
         Log.w(TAG, "health unavailable for " + elapsedMs + "ms; stopping stale tunnel");
-        stopTunnel("隧道健康检查超时，已断开");
+        manualStopRequested = true;
+        cancelNetworkRecovery();
+        enqueueStopTunnel("隧道健康检查超时，已断开");
     }
 
     /** 从 UI 收到测速请求后，交给 health 线程串行执行，避免并发读写控制连接。 */
@@ -1336,7 +1389,7 @@ public final class WgvpnService extends VpnService {
             }
             speedTestRunning = true;
         }
-        executor.execute(() -> {
+        controlExecutor.execute(() -> {
             SpeedTestRequest request = new SpeedTestRequest();
             synchronized (speedTestLock) {
                 pendingSpeedTest = request;
@@ -1383,7 +1436,7 @@ public final class WgvpnService extends VpnService {
             for (int i = 0; i < SPEED_TEST_PING_COUNT; i++) {
                 long nonce = System.nanoTime();
                 long startedAt = System.nanoTime();
-                writeBytesCodecFrame(out, "{\"t\":\"SpeedPing\",\"c\":{\"nonce\":" + nonce + "}}");
+                HealthFrameCodec.write(out, "{\"t\":\"SpeedPing\",\"c\":{\"nonce\":" + nonce + "}}");
                 JSONObject pong = readControlMessage(in);
                 JSONObject content = pong.optJSONObject("c");
                 if (!"SpeedPong".equals(pong.optString("t", "")) || content == null
@@ -1409,7 +1462,7 @@ public final class WgvpnService extends VpnService {
     /** 单方向测速前都重新启动一次对端 one-off riperf3 server，对齐桌面端。 */
     private double runSpeedTestDirection(java.io.DataInputStream in, java.io.DataOutputStream out,
                                          boolean reverse) throws Exception {
-        writeBytesCodecFrame(out, "{\"t\":\"SpeedStart\"}");
+        HealthFrameCodec.write(out, "{\"t\":\"SpeedStart\"}");
         JSONObject ready = readControlMessage(in);
         if (!"SpeedReady".equals(ready.optString("t", ""))) {
             throw new java.io.IOException("对端未准备测速：" + ready);
@@ -1422,7 +1475,7 @@ public final class WgvpnService extends VpnService {
     }
 
     private static JSONObject readControlMessage(java.io.DataInputStream in) throws Exception {
-        return new JSONObject(new String(readBytesCodecFrame(in), java.nio.charset.StandardCharsets.UTF_8));
+        return new JSONObject(new String(HealthFrameCodec.read(in), java.nio.charset.StandardCharsets.UTF_8));
     }
 
     private void broadcastSpeedResult(boolean success, double latencyMs, double downloadMbps,
@@ -1434,7 +1487,7 @@ public final class WgvpnService extends VpnService {
         intent.putExtra(EXTRA_SPEED_DOWNLOAD_MBPS, downloadMbps);
         intent.putExtra(EXTRA_SPEED_UPLOAD_MBPS, uploadMbps);
         intent.putExtra(EXTRA_MESSAGE, message);
-        sendBroadcast(intent);
+        sendBroadcast(intent, InternalBroadcasts.PERMISSION);
     }
 
     /**
@@ -1449,7 +1502,7 @@ public final class WgvpnService extends VpnService {
             try {
                 java.io.DataOutputStream out = new java.io.DataOutputStream(
                         new java.io.BufferedOutputStream(socket.getOutputStream()));
-                writeBytesCodecFrame(out, "{\"t\":\"Stop\",\"c\":{\"reason\":\"initiator_closed\"}}");
+                HealthFrameCodec.write(out, "{\"t\":\"Stop\",\"c\":{\"reason\":\"initiator_closed\"}}");
                 out.flush();
             } catch (Exception e) {
                 Log.w(TAG, "health send Stop failed: " + e.getMessage());
@@ -1515,59 +1568,6 @@ public final class WgvpnService extends VpnService {
     }
 
     /**
-     * 写一帧（RustDesk BytesCodec 格式）：变长小端头 + payload。
-     * 对齐桌面 bytes_codec.rs encode：底 2 bit 编码头长度(1-4)，payload 长度 = 头部值 >> 2。
-     */
-    private static void writeBytesCodecFrame(java.io.DataOutputStream out, String json) throws Exception {
-        byte[] data = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        int len = data.length;
-        java.io.ByteArrayOutputStream header = new java.io.ByteArrayOutputStream(4);
-        if (len <= 0x3F) {
-            header.write(len << 2);
-        } else if (len <= 0x3FFF) {
-            int h = (len << 2) | 0x1;
-            header.write(h & 0xFF);
-            header.write((h >> 8) & 0xFF);
-        } else if (len <= 0x3FFFFF) {
-            int h = (len << 2) | 0x2;
-            header.write(h & 0xFF);
-            header.write((h >> 8) & 0xFF);
-            header.write((h >> 16) & 0xFF);
-        } else if (len <= 0x3FFFFFFF) {
-            int h = (len << 2) | 0x3;
-            header.write(h & 0xFF);
-            header.write((h >> 8) & 0xFF);
-            header.write((h >> 16) & 0xFF);
-            header.write((h >> 24) & 0xFF);
-        } else {
-            throw new IllegalArgumentException("health frame too large: " + len);
-        }
-        out.write(header.toByteArray());
-        out.write(data);
-        out.flush();
-    }
-
-    /**
-     * 读一帧（RustDesk BytesCodec 格式）：解析变长小端头 → 读 payload。
-     * 对齐桌面 bytes_codec.rs decode。
-     */
-    private static byte[] readBytesCodecFrame(java.io.DataInputStream in) throws Exception {
-        int first = in.readUnsignedByte();
-        int headLen = (first & 0x3) + 1;
-        int n = first;
-        for (int i = 1; i < headLen; i++) {
-            n |= in.readUnsignedByte() << (8 * i);
-        }
-        n >>>= 2;
-        if (n < 0 || n > 0x3FFFFFFF) {
-            throw new java.io.IOException("health frame invalid length: " + n);
-        }
-        byte[] data = new byte[n];
-        in.readFully(data);
-        return data;
-    }
-
-    /**
      * 主动端放弃本次 attempt 时，通过 WS 发 attempt_cancel 通知被动端停止等待。
      * 对齐桌面 P2PAttemptMessage::AttemptCancel。失败静默忽略（被动端有自身超时兜底）。
      */
@@ -1601,6 +1601,25 @@ public final class WgvpnService extends VpnService {
         emit(TunnelState.STOPPED, message, "", "", "");
         stopForeground(true);
         stopSelf();
+    }
+
+    /** 所有 native 销毁操作与建链操作共用同一个单线程队列，调用方不得直接清理。 */
+    private void enqueueStopTunnel(String message) {
+        if (!stopQueued.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            executor.execute(() -> {
+                try {
+                    stopTunnel(message);
+                } finally {
+                    stopQueued.set(false);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            stopQueued.set(false);
+            Log.w(TAG, "stop ignored because native executor is closed", e);
+        }
     }
 
     /**
@@ -1680,7 +1699,7 @@ public final class WgvpnService extends VpnService {
         update.putExtra(EXTRA_CONNECTED_AT, connectedAtMs);
         update.putExtra(EXTRA_RX_BYTES, cumulativeRx);
         update.putExtra(EXTRA_TX_BYTES, cumulativeTx);
-        sendBroadcast(update);
+        sendBroadcast(update, InternalBroadcasts.PERMISSION);
     }
 
     private void ensureChannel() {

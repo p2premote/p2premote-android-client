@@ -61,8 +61,10 @@ public final class PresenceService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) {
-            // 系统重建时 intent 为 null；App 可能在后台，startForeground 会受限，直接退出。
-            return START_NOT_STICKY;
+            // START_STICKY 进程重建不会重放原 Intent。此时必须完整恢复前台状态和 WS，
+            // 否则服务虽然被系统重新创建，设备却会永久离线。
+            return startPresence(startId, "正在恢复在线保活...")
+                    ? START_STICKY : START_NOT_STICKY;
         }
         String action = intent.getAction();
         if (ACTION_STOP.equals(action)) {
@@ -73,24 +75,40 @@ public final class PresenceService extends Service {
             return START_NOT_STICKY;
         }
         if (ACTION_START.equals(action)) {
-            try {
-                startForeground(NOTIFICATION_ID, notification("正在连接服务..."));
-            } catch (Exception e) {
-                Log.w(TAG, "startForeground denied, stopping: " + e.getMessage());
-                stopSelf();
-                return START_NOT_STICKY;
-            }
-            // 委托 WsConnection 建立 WS 连接。
-            try {
-                Session session = sessionStore.require();
-                WsConnection.get(this).start(session);
-            } catch (Exception e) {
-                Log.w(TAG, "no valid session: " + e.getMessage());
-                emit(STATE_DISCONNECTED, "未登录，无法保活");
-            }
-            return START_STICKY;
+            return startPresence(startId, "正在连接服务...")
+                    ? START_STICKY : START_NOT_STICKY;
         }
         return START_NOT_STICKY;
+    }
+
+    private boolean startPresence(int startId, String notificationText) {
+        try {
+            startForeground(NOTIFICATION_ID, notification(notificationText));
+            Session session = sessionStore.require();
+            WsConnection connection = WsConnection.get(this);
+            connection.start(session);
+            // ACTION_START 也可能只是新 Activity 对既有 Service 的重复启动。
+            // 必须主动回放快照，否则通知会停在“正在连接”，新 Activity 也收不到 CONNECTED。
+            replayCurrentState(connection.activeState());
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "presence start failed, stopping: " + e.getMessage());
+            WsConnection.get(this).stop();
+            emit(STATE_DISCONNECTED, "未登录或无法启动在线保活");
+            stopForeground(true);
+            stopSelfResult(startId);
+            return false;
+        }
+    }
+
+    /** Android 15+ 前台服务超时的最后一道防线；任何类型调整都不能演变为进程崩溃。 */
+    @Override
+    public void onTimeout(int startId, int fgsType) {
+        Log.w(TAG, "foreground service timed out: type=" + fgsType);
+        WsConnection.get(this).stop();
+        emit(STATE_DISCONNECTED, "在线保活已被系统停止");
+        stopForeground(true);
+        stopSelf();
     }
 
     @Override
@@ -100,7 +118,9 @@ public final class PresenceService extends Service {
 
     @Override
     public void onDestroy() {
-        WsConnection.get(this).stop();
+        WsConnection connection = WsConnection.get(this);
+        connection.setStateListener(null);
+        connection.stop();
         super.onDestroy();
     }
 
@@ -108,7 +128,16 @@ public final class PresenceService extends Service {
      * 推送连接状态广播并更新通知栏。仅当状态变化时才广播，避免冗余。
      */
     private void emit(String state, String message) {
-        if (state.equals(lastBroadcastState)) {
+        emit(state, message, false);
+    }
+
+    private void replayCurrentState(String state) {
+        updateNotification(state);
+        emit(state, stateMessage(state), true);
+    }
+
+    private void emit(String state, String message, boolean force) {
+        if (!force && state.equals(lastBroadcastState)) {
             return;
         }
         lastBroadcastState = state;
@@ -116,7 +145,13 @@ public final class PresenceService extends Service {
         update.setPackage(getPackageName());
         update.putExtra(EXTRA_STATE, state);
         update.putExtra(EXTRA_MESSAGE, message == null ? "" : message);
-        sendBroadcast(update);
+        sendBroadcast(update, InternalBroadcasts.PERMISSION);
+    }
+
+    private static String stateMessage(String state) {
+        if (STATE_CONNECTED.equals(state)) return "在线保活已连接";
+        if (STATE_CONNECTING.equals(state)) return "正在连接服务...";
+        return "连接断开，重连中";
     }
 
     private void ensureChannel() {

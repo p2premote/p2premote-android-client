@@ -1,8 +1,6 @@
 package top.p2premote.android;
 
 import android.content.Context;
-import android.os.Handler;
-import android.os.Looper;
 import android.util.Log;
 
 import org.json.JSONObject;
@@ -17,11 +15,13 @@ import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 进程级 WebSocket 连接单例，由 PresenceService 启动/维持，WgvpnService 共享用于发收
@@ -54,10 +54,16 @@ public final class WsConnection {
 
     private static volatile WsConnection instance;
 
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ScheduledExecutorService heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
+    private final ExecutorService connectionExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean connected = new AtomicBoolean(false);
+    /** start/stop 代际；所有延迟重连都必须属于当前代际。 */
+    private final AtomicLong lifecycleGeneration = new AtomicLong(0);
+    private final SessionStore sessionStore;
+    private final ApiClient apiClient;
+    /** socket 替换和 stop 关闭必须原子，防止停止后迟到任务重新挂上连接。 */
+    private final Object connectionLock = new Object();
 
     private volatile WebSocketClient webSocket;
     private final Object heartbeatLock = new Object();
@@ -66,11 +72,9 @@ public final class WsConnection {
     private int consecutiveHeartbeatFailures = 0;
     private ScheduledFuture<?> pingFuture;
     private ScheduledFuture<?> pongTimeoutFuture;
+    private ScheduledFuture<?> reconnectFuture;
     private volatile int reconnectAttempt = 0;
     private volatile String activeState = PresenceService.STATE_DISCONNECTED;
-    /** 最近一次连接用的 session，重连时复用（重连前 token 会重新从 SessionStore 读取）。 */
-    private volatile Session lastSession;
-
     /** 等待 p2p_notify_ack 的请求表：message_id → 结果（true=accepted）。 */
     private final ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Boolean>> pendingAcks =
             new ConcurrentHashMap<>();
@@ -86,14 +90,17 @@ public final class WsConnection {
         void onStateChanged(String state, String message);
     }
 
-    private WsConnection() {}
+    private WsConnection(Context context) {
+        sessionStore = new SessionStore(context.getApplicationContext());
+        apiClient = new ApiClient(sessionStore);
+    }
 
     /** 获取进程级单例。 */
     public static WsConnection get(Context context) {
         if (instance == null) {
             synchronized (WsConnection.class) {
                 if (instance == null) {
-                    instance = new WsConnection();
+                    instance = new WsConnection(context);
                 }
             }
         }
@@ -118,9 +125,13 @@ public final class WsConnection {
             Log.w(TAG, "start: no session");
             return;
         }
-        running.set(true);
-        this.lastSession = session;
-        connectInternal();
+        if (!running.compareAndSet(false, true)) {
+            Log.d(TAG, "start ignored: connection lifecycle already running");
+            return;
+        }
+        cancelReconnect();
+        long generation = lifecycleGeneration.incrementAndGet();
+        connectionExecutor.execute(() -> connectInternal(generation));
     }
 
     /**
@@ -128,8 +139,11 @@ public final class WsConnection {
      */
     void stop() {
         running.set(false);
-        mainHandler.removeCallbacksAndMessages(null);
-        disconnectSocket();
+        lifecycleGeneration.incrementAndGet();
+        cancelReconnect();
+        synchronized (connectionLock) {
+            disconnectSocket();
+        }
         connected.set(false);
         activeState = PresenceService.STATE_DISCONNECTED;
         // 唤醒所有等待 ack 的调用方，避免 WgvpnService 永久阻塞。
@@ -203,16 +217,24 @@ public final class WsConnection {
 
     // ============ 内部连接逻辑 ============
 
-    /**
-     * 用 lastSession 建立 WS 连接。首次连接和重连都走这里。
-     */
-    private void connectInternal() {
-        if (!running.get() || lastSession == null) {
+    /** 每次首次连接和重连都从 SessionStore 取得最新令牌。 */
+    private void connectInternal(long generation) {
+        if (!isCurrent(generation)) {
             return;
         }
-        final Session session = lastSession;
-        disconnectSocket();
-
+        final Session session;
+        try {
+            // 不能复用启动时 Session 快照：HTTP 层可能已经旋转 access/refresh token。
+            session = apiClient.ensureFreshSession();
+        } catch (Exception e) {
+            if (isCurrent(generation)) {
+                handleDisconnect("刷新登录态失败：" + e.getMessage());
+            }
+            return;
+        }
+        if (!isCurrent(generation)) {
+            return;
+        }
         String wsUrl = session.serverUrl
                 .replace("https://", "wss://")
                 .replace("http://", "ws://");
@@ -270,8 +292,18 @@ public final class WsConnection {
             handleDisconnect("连接失败：" + e.getMessage());
             return;
         }
-        webSocket = socket;
-        socket.connect();
+        synchronized (connectionLock) {
+            if (!isCurrent(generation)) {
+                return;
+            }
+            disconnectSocket();
+            webSocket = socket;
+            socket.connect();
+        }
+    }
+
+    private boolean isCurrent(long generation) {
+        return running.get() && lifecycleGeneration.get() == generation;
     }
 
     /** 与桌面端 ws.rs 一致：首次立即 Ping，匹配 Pong 后才确认在线。 */
@@ -426,7 +458,22 @@ public final class WsConnection {
         }
         reconnectAttempt++;
         Log.i(TAG, "schedule reconnect in " + delay + "ms (attempt " + reconnectAttempt + ")");
-        mainHandler.postDelayed(this::connectInternal, delay);
+        long generation = lifecycleGeneration.get();
+        synchronized (heartbeatLock) {
+            if (reconnectFuture != null) reconnectFuture.cancel(false);
+            reconnectFuture = heartbeatExecutor.schedule(
+                    () -> connectionExecutor.execute(() -> connectInternal(generation)),
+                    delay, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private void cancelReconnect() {
+        synchronized (heartbeatLock) {
+            if (reconnectFuture != null) {
+                reconnectFuture.cancel(false);
+                reconnectFuture = null;
+            }
+        }
     }
 
     private void disconnectSocket() {

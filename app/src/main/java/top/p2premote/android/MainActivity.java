@@ -1,6 +1,7 @@
 package top.p2premote.android;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
@@ -48,6 +49,9 @@ public final class MainActivity extends Activity {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final List<DeviceItem> cachedDevices = new ArrayList<>();
+    /** 后台任务只可回调创建它的 Activity 代际；销毁或退出登录会使旧回调失效。 */
+    private volatile int callbackGeneration = 0;
+    private volatile boolean destroyed = false;
 
     private SessionStore sessionStore;
     private ApiClient apiClient;
@@ -189,7 +193,9 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        mainHandler.removeCallbacks(connectedDurationTicker);
+        destroyed = true;
+        callbackGeneration++;
+        mainHandler.removeCallbacksAndMessages(null);
         unregisterReceiver(tunnelReceiver);
         unregisterReceiver(presenceReceiver);
         executor.shutdownNow();
@@ -1073,6 +1079,8 @@ public final class MainActivity extends Activity {
 
     /** 执行退出登录的全部清理：停隧道/停保活/清会话与 UI 状态/回登录页。 */
     private void performLogout() {
+        // 已在执行的列表刷新/别名更新不能在清空会话后再改写当前页面。
+        callbackGeneration++;
         stopTunnel();
         stopPresenceService();
         cachedDevices.clear();
@@ -1236,16 +1244,21 @@ public final class MainActivity extends Activity {
         });
     }
 
+    @SuppressLint("UnspecifiedRegisterReceiverFlag") // API 29-32 分支由 signature permission 隔离。
     private void registerTunnelReceiver() {
         IntentFilter tunnelFilter = new IntentFilter(WgvpnService.ACTION_STATUS);
         tunnelFilter.addAction(WgvpnService.ACTION_SPEED_RESULT);
         IntentFilter presenceFilter = new IntentFilter(PresenceService.ACTION_STATUS);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(tunnelReceiver, tunnelFilter, Context.RECEIVER_NOT_EXPORTED);
-            registerReceiver(presenceReceiver, presenceFilter, Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(tunnelReceiver, tunnelFilter, InternalBroadcasts.PERMISSION,
+                    mainHandler, Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(presenceReceiver, presenceFilter, InternalBroadcasts.PERMISSION,
+                    mainHandler, Context.RECEIVER_NOT_EXPORTED);
         } else {
-            registerReceiver(tunnelReceiver, tunnelFilter);
-            registerReceiver(presenceReceiver, presenceFilter);
+            registerReceiver(tunnelReceiver, tunnelFilter,
+                    InternalBroadcasts.PERMISSION, mainHandler);
+            registerReceiver(presenceReceiver, presenceFilter,
+                    InternalBroadcasts.PERMISSION, mainHandler);
         }
     }
 
@@ -1282,17 +1295,20 @@ public final class MainActivity extends Activity {
     private interface Success<T> { void accept(T value); }
 
     private <T> void runAsync(String loadingText, Task<T> task, Success<T> success) {
+        final int generation = callbackGeneration;
         setBusy(true, loadingText);
         executor.execute(() -> {
             try {
                 T result = task.run();
                 mainHandler.post(() -> {
+                    if (!acceptsCallback(generation)) return;
                     setBusy(false, "");
                     success.accept(result);
                 });
             } catch (final Exception e) {
                 android.util.Log.e("p2pRemote", "async failed", e);
                 mainHandler.post(() -> {
+                    if (!acceptsCallback(generation)) return;
                     String friendly = friendlyError(e);
                     setBusy(false, friendly);
                     toast(friendly);
@@ -1300,6 +1316,11 @@ public final class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+    private boolean acceptsCallback(int generation) {
+        return !destroyed && !isFinishing() && !isDestroyed()
+                && callbackGeneration == generation;
     }
 
     /**

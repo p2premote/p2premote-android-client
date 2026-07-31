@@ -48,8 +48,4 @@ final class Session {
                 newUsername, deviceId, deviceUuid, wgPrivateKeyHex, wgPublicKeyHex);
     }
 
-    Session withWgKeypair(String privHex, String pubHex) {
-        return new Session(serverUrl, accessToken, refreshToken, accessTokenExpiresAt,
-                username, deviceId, deviceUuid, privHex, pubHex);
-    }
 }

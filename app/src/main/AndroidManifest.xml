@@ -1,13 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <permission
+        android:name="top.p2premote.android.permission.INTERNAL_BROADCAST"
+        android:protectionLevel="signature" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 前台 VPN 仍会受到 Doze 的 CPU 挂起影响；隧道存续期间需要维持心跳执行。 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="top.p2premote.android.permission.INTERNAL_BROADCAST" />
 
     <application
         android:allowBackup="false"
@@ -43,6 +47,10 @@
         <service
             android:name=".PresenceService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="persistent_p2p_device_presence_and_signaling" />
+        </service>
     </application>
 </manifest>

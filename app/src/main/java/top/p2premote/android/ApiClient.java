@@ -4,20 +4,37 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 final class ApiClient {
     private static final int CONNECT_TIMEOUT_MS = 15_000;
     private static final int READ_TIMEOUT_MS = 30_000;
+    private static final long TOTAL_REQUEST_TIMEOUT_MS = 45_000L;
+    static final int MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+    private static final long TOKEN_REFRESH_SKEW_MS = 60_000L;
+    /** 所有 ApiClient 实例共享一次 refresh，避免旋转型 refresh token 被并发消费。 */
+    private static final Object REFRESH_LOCK = new Object();
+    /** HttpURLConnection 没有 call timeout；定时 disconnect 为整个请求提供硬截止时间。 */
+    private static final ScheduledExecutorService REQUEST_DEADLINE_EXECUTOR =
+            Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "p2premote-http-deadline");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     private final SessionStore sessionStore;
 
@@ -58,6 +75,7 @@ final class ApiClient {
 
     DeviceItem registerCurrentDevice(android.content.Context context) throws Exception {
         Session session = sessionStore.require();
+        long accountGeneration = sessionStore.accountGeneration();
         JSONObject req = new JSONObject();
         req.put("device_name", DeviceIdentity.deviceName());
         req.put("device_type", "android");
@@ -70,7 +88,8 @@ final class ApiClient {
 
         JSONObject data = authedRequest(session, "POST", "/api/v1/devices", req);
         DeviceItem device = parseDevice(data);
-        sessionStore.save(sessionStore.require().withDevice(device));
+        // 防止退出/重新登录后，旧请求把设备信息写入新的会话。
+        sessionStore.updateDeviceIfCurrent(accountGeneration, device);
         return device;
     }
 
@@ -213,8 +232,30 @@ final class ApiClient {
             if (e.httpStatus != HttpURLConnection.HTTP_UNAUTHORIZED) {
                 throw e;
             }
-            Session refreshed = refresh(session);
+            Session refreshed = refreshAfterUnauthorized(session);
             return request(refreshed.serverUrl, method, path, body, refreshed.accessToken);
+        }
+    }
+
+    /** WebSocket 建连前调用：始终以 Store 最新值为准，并在临近过期时单飞刷新。 */
+    Session ensureFreshSession() throws Exception {
+        synchronized (REFRESH_LOCK) {
+            Session current = sessionStore.require();
+            if (current.accessTokenExpiresAt > System.currentTimeMillis() + TOKEN_REFRESH_SKEW_MS) {
+                return current;
+            }
+            return refresh(current);
+        }
+    }
+
+    private Session refreshAfterUnauthorized(Session failedSession) throws Exception {
+        synchronized (REFRESH_LOCK) {
+            Session current = sessionStore.require();
+            // 另一个请求可能已经刷新成功；不要再次消费旧 refresh token。
+            if (!current.accessToken.equals(failedSession.accessToken)) {
+                return current;
+            }
+            return refresh(current);
         }
     }
 
@@ -233,14 +274,12 @@ final class ApiClient {
             throw new IOException("刷新登录态失败：响应缺少令牌");
         }
 
-        Session refreshed = session.withTokens(
+        return sessionStore.updateTokensIfCurrent(
+                session,
                 accessToken,
                 refreshToken,
                 System.currentTimeMillis() + expiresIn * 1000L,
-                username
-        );
-        sessionStore.save(refreshed);
-        return refreshed;
+                username);
     }
 
     private DeviceItem parseDevice(JSONObject item) {
@@ -296,64 +335,95 @@ final class ApiClient {
 
     private JSONObject request(String serverUrl, String method, String path, JSONObject body, String bearerToken)
             throws Exception {
+        long startedNanos = System.nanoTime();
         URL url = new URL(normalizeServerUrl(serverUrl) + path);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-        conn.setReadTimeout(READ_TIMEOUT_MS);
-        conn.setRequestMethod(method);
-        conn.setRequestProperty("Accept", "application/json");
-        if (bearerToken != null && !bearerToken.isEmpty()) {
-            conn.setRequestProperty("Authorization", "Bearer " + bearerToken);
-        }
-        if (body != null) {
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-            byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
-            conn.setFixedLengthStreamingMode(bytes.length);
-            try (OutputStream out = conn.getOutputStream()) {
-                out.write(bytes);
-            }
-        }
-
-        int status = conn.getResponseCode();
-        String raw = readFully(status >= 400 ? conn.getErrorStream() : conn.getInputStream());
-        JSONObject envelope;
+        AtomicBoolean deadlineExceeded = new AtomicBoolean(false);
+        ScheduledFuture<?> deadline = REQUEST_DEADLINE_EXECUTOR.schedule(() -> {
+            deadlineExceeded.set(true);
+            conn.disconnect();
+        }, TOTAL_REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         try {
-            envelope = new JSONObject(raw);
-        } catch (JSONException e) {
-            throw new IOException("服务端响应不是 JSON: HTTP " + status, e);
-        }
+            conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(READ_TIMEOUT_MS);
+            conn.setRequestMethod(method);
+            conn.setRequestProperty("Accept", "application/json");
+            if (bearerToken != null && !bearerToken.isEmpty()) {
+                conn.setRequestProperty("Authorization", "Bearer " + bearerToken);
+            }
+            if (body != null) {
+                conn.setDoOutput(true);
+                conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+                conn.setFixedLengthStreamingMode(bytes.length);
+                try (OutputStream out = conn.getOutputStream()) {
+                    out.write(bytes);
+                }
+            }
 
-        int code = envelope.optInt("code", -1);
-        String msg = envelope.optString("msg", "请求失败");
-        if (status >= 400 || code != 0) {
-            throw new ApiException(status, code, msg);
-        }
+            int status = conn.getResponseCode();
+            long declaredLength = conn.getContentLengthLong();
+            if (declaredLength > MAX_RESPONSE_BYTES) {
+                throw new IOException("服务端响应过大（上限 2 MiB）");
+            }
+            String raw = readFully(
+                    status >= 400 ? conn.getErrorStream() : conn.getInputStream(), startedNanos);
+            JSONObject envelope;
+            try {
+                envelope = new JSONObject(raw);
+            } catch (JSONException e) {
+                throw new IOException("服务端响应不是 JSON: HTTP " + status, e);
+            }
 
-        Object data = envelope.opt("data");
-        if (data instanceof JSONObject) {
-            return (JSONObject) data;
+            int code = envelope.optInt("code", -1);
+            String msg = envelope.optString("msg", "请求失败");
+            if (status >= 400 || code != 0) {
+                throw new ApiException(status, code, msg);
+            }
+
+            Object data = envelope.opt("data");
+            if (data instanceof JSONObject) {
+                return (JSONObject) data;
+            }
+            if (data instanceof JSONArray) {
+                JSONObject wrapper = new JSONObject();
+                wrapper.put("_array", data);
+                return wrapper;
+            }
+            return new JSONObject();
+        } catch (IOException e) {
+            if (deadlineExceeded.get()) {
+                SocketTimeoutException timeout = new SocketTimeoutException("请求总耗时超过 45 秒");
+                timeout.initCause(e);
+                throw timeout;
+            }
+            throw e;
+        } finally {
+            deadline.cancel(false);
+            conn.disconnect();
         }
-        if (data instanceof JSONArray) {
-            JSONObject wrapper = new JSONObject();
-            wrapper.put("_array", data);
-            return wrapper;
-        }
-        return new JSONObject();
     }
 
-    private static String readFully(InputStream stream) throws IOException {
+    static String readFully(InputStream stream, long startedNanos) throws IOException {
         if (stream == null) {
             return "{}";
         }
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                sb.append(line);
+        try (InputStream input = stream;
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                if (TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos)
+                        >= TOTAL_REQUEST_TIMEOUT_MS) {
+                    throw new SocketTimeoutException("请求总耗时超过 45 秒");
+                }
+                if (output.size() > MAX_RESPONSE_BYTES - read) {
+                    throw new IOException("服务端响应过大（上限 2 MiB）");
+                }
+                output.write(buffer, 0, read);
             }
+            return output.toString(StandardCharsets.UTF_8.name());
         }
-        return sb.toString();
     }
 
     private static String normalizeServerUrl(String serverUrl) {
