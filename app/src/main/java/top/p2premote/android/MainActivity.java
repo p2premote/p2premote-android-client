@@ -70,6 +70,8 @@ public final class MainActivity extends Activity {
     /** 累计流量（由 WgvpnService 广播驱动），用于连接页统计展示。 */
     private long rxBytes = 0;
     private long txBytes = 0;
+    /** 健康心跳最近一次测得的隧道 RTT；-1 表示尚无有效样本。 */
+    private long tunnelLatencyMs = -1;
     /** 当前隧道测速是否正在执行；由测速结果广播复位。 */
     private boolean speedTesting = false;
 
@@ -79,6 +81,7 @@ public final class MainActivity extends Activity {
     private TextView durationView;
     private TextView trafficDownView;
     private TextView trafficUpView;
+    private TextView latencyView;
     // B1：状态切换时按钮背景色平滑过渡。记录上一帧按钮色，重建后跑 ArgbEvaluator 动画。
     private int lastConnectBtnColor = 0;
     private Button connectBtn;
@@ -145,6 +148,7 @@ public final class MainActivity extends Activity {
             connectedAtMs = intent.getLongExtra(WgvpnService.EXTRA_CONNECTED_AT, 0);
             rxBytes = intent.getLongExtra(WgvpnService.EXTRA_RX_BYTES, 0);
             txBytes = intent.getLongExtra(WgvpnService.EXTRA_TX_BYTES, 0);
+            tunnelLatencyMs = intent.getLongExtra(WgvpnService.EXTRA_LATENCY_MS, -1);
             renderCurrentPage();
         }
     };
@@ -675,6 +679,7 @@ public final class MainActivity extends Activity {
         durationView = null;
         trafficDownView = null;
         trafficUpView = null;
+        latencyView = null;
         int prevColor = lastConnectBtnColor;
         connectBtn = null;
         connectBtnColor = 0;
@@ -746,6 +751,10 @@ public final class MainActivity extends Activity {
         }
         if (trafficUpView != null) {
             trafficUpView.setText("⬆ 上传  " + (connected ? formatBytes(txBytes) : "—"));
+        }
+        if (latencyView != null) {
+            latencyView.setText("延迟  " + (connected && tunnelLatencyMs >= 0
+                    ? tunnelLatencyMs + " ms" : "—"));
         }
     }
 
@@ -845,6 +854,10 @@ public final class MainActivity extends Activity {
                 durationView.setPadding(dp(10), 0, 0, 0);
                 statusRow.addView(durationView);
             }
+            latencyView = body("延迟  " + (tunnelLatencyMs >= 0
+                    ? tunnelLatencyMs + " ms" : "—"));
+            latencyView.setPadding(dp(10), 0, 0, 0);
+            statusRow.addView(latencyView);
             wrap.addView(statusRow);
             if (!peerVirtualIp.isEmpty()) {
                 TextView vip = monoAddress(peerVirtualIp);

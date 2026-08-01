@@ -89,6 +89,7 @@ public final class WgvpnService extends VpnService {
     static final String EXTRA_RX_BYTES = "rx_bytes";
     /** 累计上传字节数（发送到对端），CONNECTED 时实时更新。 */
     static final String EXTRA_TX_BYTES = "tx_bytes";
+    static final String EXTRA_LATENCY_MS = "latency_ms";
     static final String EXTRA_SPEED_SUCCESS = "speed_success";
     static final String EXTRA_SPEED_LATENCY_MS = "speed_latency_ms";
     static final String EXTRA_SPEED_DOWNLOAD_MBPS = "speed_download_mbps";
@@ -169,6 +170,8 @@ public final class WgvpnService extends VpnService {
     private volatile java.net.Socket healthSocket = null;
     private Thread healthClientThread = null;
     private volatile long lastHealthSuccessElapsedMs = 0;
+    /** 主动端用单调时钟最近一次测得的隧道 RTT；-1 表示尚无有效样本。 */
+    private volatile long tunnelLatencyMs = -1;
     /**
      * Foreground Service 只降低被杀概率，并不保证 Doze 时 CPU 继续调度。
      * 隧道存在时持有 partial wakelock，保证 WG keepalive 与健康心跳能实际运行。
@@ -677,6 +680,7 @@ public final class WgvpnService extends VpnService {
         cumulativeTx = 0;
         lastSampleRx = 0;
         lastSampleTx = 0;
+        tunnelLatencyMs = -1;
     }
 
     /**
@@ -1173,6 +1177,7 @@ public final class WgvpnService extends VpnService {
         trafficPolling = true;
         lastSampleRx = 0;
         lastSampleTx = 0;
+        tunnelLatencyMs = -1;
         trafficHandler.postDelayed(trafficPollRunnable, TRAFFIC_POLL_INTERVAL_MS);
     }
 
@@ -1300,6 +1305,8 @@ public final class WgvpnService extends VpnService {
                     break;
                 }
                 Log.i(TAG, "health handshake ok, starting heartbeat");
+                tunnelLatencyMs = -1;
+                emitStatusOnly();
 
                 // 2. 心跳循环：每 5s 发 Ping，等 Pong（对齐桌面 p2p.rs:398-419）
                 while (healthClientRunning && !socket.isClosed()) {
@@ -1309,7 +1316,12 @@ public final class WgvpnService extends VpnService {
                         continue;
                     }
                     long ts = System.currentTimeMillis();
-                    String ping = "{\"t\":\"Ping\",\"c\":{\"ts\":" + ts + "}}";
+                    long reportedRttMs = tunnelLatencyMs;
+                    String ping = "{\"t\":\"Ping\",\"c\":{\"ts\":" + ts
+                            + (reportedRttMs >= 0
+                            ? ",\"reported_rtt_ms\":" + reportedRttMs : "")
+                            + "}}";
+                    long startedNanos = SystemClock.elapsedRealtimeNanos();
                     HealthFrameCodec.write(out, ping);
                     byte[] pongBytes = HealthFrameCodec.read(in);
                     JSONObject pong = new JSONObject(new String(pongBytes, java.nio.charset.StandardCharsets.UTF_8));
@@ -1319,7 +1331,14 @@ public final class WgvpnService extends VpnService {
                         Log.w(TAG, "health unexpected pong: " + pong);
                         break;
                     }
+                    long rawRttMs = Math.max(0L, Math.round(
+                            (SystemClock.elapsedRealtimeNanos() - startedNanos) / 1_000_000.0));
+                    long previousLatencyMs = tunnelLatencyMs;
+                    tunnelLatencyMs = rawRttMs;
                     lastHealthSuccessElapsedMs = SystemClock.elapsedRealtime();
+                    if (tunnelLatencyMs != previousLatencyMs) {
+                        emitStatusOnly();
+                    }
                     // 等待下一个心跳周期（sleep 5s，可被 stop 唤醒）
                     long deadline = System.currentTimeMillis() + HEALTH_PING_INTERVAL_SEC * 1000L;
                     while (healthClientRunning && System.currentTimeMillis() < deadline) {
@@ -1598,6 +1617,7 @@ public final class WgvpnService extends VpnService {
         cumulativeTx = 0;
         lastSampleRx = 0;
         lastSampleTx = 0;
+        tunnelLatencyMs = -1;
         emit(TunnelState.STOPPED, message, "", "", "");
         stopForeground(true);
         stopSelf();
@@ -1699,6 +1719,7 @@ public final class WgvpnService extends VpnService {
         update.putExtra(EXTRA_CONNECTED_AT, connectedAtMs);
         update.putExtra(EXTRA_RX_BYTES, cumulativeRx);
         update.putExtra(EXTRA_TX_BYTES, cumulativeTx);
+        update.putExtra(EXTRA_LATENCY_MS, tunnelLatencyMs);
         sendBroadcast(update, InternalBroadcasts.PERMISSION);
     }
 
