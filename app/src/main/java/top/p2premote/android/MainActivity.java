@@ -23,6 +23,7 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -304,6 +305,7 @@ public final class MainActivity extends Activity {
         TextView advancedToggle = helpText("▸ 高级");
         advancedToggle.setTextColor(0xFF2563EB);
 
+        card.addView(brandLogo());
         card.addView(brand);
         card.addView(subtitle);
         card.addView(spacer(10));
@@ -402,6 +404,7 @@ public final class MainActivity extends Activity {
         statusView = muted("");
         TextView backToLogin = helpText("已有账号？返回登录");
 
+        card.addView(brandLogo());
         card.addView(brand);
         card.addView(subtitle);
         card.addView(spacer(6));
@@ -504,6 +507,7 @@ public final class MainActivity extends Activity {
         statusView = muted("");
         TextView forgotBack = helpText("返回登录");
 
+        card.addView(brandLogo());
         card.addView(brand);
         card.addView(subtitle);
         card.addView(spacer(6));
@@ -1475,6 +1479,18 @@ public final class MainActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         return row;
+    }
+
+    private ImageView brandLogo() {
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.drawable.app_logo);
+        logo.setContentDescription(null);
+        logo.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(76), dp(76));
+        lp.gravity = Gravity.CENTER_HORIZONTAL;
+        lp.setMargins(0, 0, 0, dp(8));
+        logo.setLayoutParams(lp);
+        return logo;
     }
 
     private TextView heading(String text) {

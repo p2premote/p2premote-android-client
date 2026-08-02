@@ -6,6 +6,7 @@
     <color name="brand_bg">#FFEFF6FF</color>
     <color name="brand_border">#FFBFDBFE</color>
     <color name="brand_nav_bg">#FFE8F0FF</color>
+    <color name="launcher_background">#FFFFFFFF</color>
 
     <!-- 语义状态色 -->
     <color name="online">#FF16A34A</color>

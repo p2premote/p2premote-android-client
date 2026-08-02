@@ -1749,7 +1749,7 @@ public final class WgvpnService extends VpnService {
         }
         PendingIntent contentIntent = PendingIntent.getActivity(this, 0, openApp, pendingFlags);
         return builder
-                .setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(title == null ? "p2pRemote" : title)
                 .setContentText(text == null || text.isEmpty() ? "p2pRemote" : text)
                 .setContentIntent(contentIntent)

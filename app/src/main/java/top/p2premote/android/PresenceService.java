@@ -179,7 +179,7 @@ public final class PresenceService extends Service {
         }
         PendingIntent contentIntent = PendingIntent.getActivity(this, 0, openApp, pendingFlags);
         return builder
-                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle("p2pRemote")
                 .setContentText(text == null || text.isEmpty() ? "在线保活" : text)
                 .setContentIntent(contentIntent)
