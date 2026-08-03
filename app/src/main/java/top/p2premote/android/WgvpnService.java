@@ -117,7 +117,7 @@ public final class WgvpnService extends VpnService {
      *  主动端（本机）作为 client 连接被动端「peer_virtual_ip:48082」建立健康长连接，
      *  对齐桌面 p2p.rs 的 active_health_session：connect→Hello→HelloAck→Ping/Pong。 */
     private static final int HEALTH_PORT = 48082;
-    private static final int TUNNEL_CONTROL_PROTOCOL_VERSION = 2;
+    private static final int TUNNEL_CONTROL_PROTOCOL_VERSION = 3;
     /** 健康连接 / 心跳各项超时（秒），对齐桌面 p2p.rs active_health_session。 */
     private static final int HEALTH_CONNECT_TIMEOUT_SEC = 10;
     private static final int HEALTH_HANDSHAKE_TIMEOUT_SEC = 5;
@@ -1323,12 +1323,31 @@ public final class WgvpnService extends VpnService {
                             + "}}";
                     long startedNanos = SystemClock.elapsedRealtimeNanos();
                     HealthFrameCodec.write(out, ping);
-                    byte[] pongBytes = HealthFrameCodec.read(in);
-                    JSONObject pong = new JSONObject(new String(pongBytes, java.nio.charset.StandardCharsets.UTF_8));
-                    JSONObject pongC = pong.optJSONObject("c");
-                    if (!"Pong".equals(pong.optString("t", ""))
-                            || pongC == null || pongC.optLong("ts", 0) != ts) {
-                        Log.w(TAG, "health unexpected pong: " + pong);
+                    Long remoteSpeedRequestId = null;
+                    while (true) {
+                        byte[] pongBytes = HealthFrameCodec.read(in);
+                        JSONObject pong = new JSONObject(new String(
+                                pongBytes, java.nio.charset.StandardCharsets.UTF_8));
+                        String messageType = pong.optString("t", "");
+                        if ("SpeedTestRequest".equals(messageType)) {
+                            JSONObject requestContent = pong.optJSONObject("c");
+                            long requestId = requestContent == null
+                                    ? 0 : requestContent.optLong("request_id", 0);
+                            if (requestId <= 0 || remoteSpeedRequestId != null || speedTestRunning) {
+                                sendSpeedTestError(out, requestId, "测速正在进行");
+                            } else {
+                                // 请求可能先于本次 Pong 到达。先保存请求并继续读取 Pong，
+                                // 避免随后测速读取到遗留的心跳响应而发生控制帧错位。
+                                remoteSpeedRequestId = requestId;
+                            }
+                            continue;
+                        }
+                        JSONObject pongC = pong.optJSONObject("c");
+                        if (!"Pong".equals(messageType)
+                                || pongC == null || pongC.optLong("ts", 0) != ts) {
+                            Log.w(TAG, "health unexpected pong: " + pong);
+                            throw new java.io.IOException("健康检查响应无效：" + pong);
+                        }
                         break;
                     }
                     long rawRttMs = Math.max(0L, Math.round(
@@ -1338,6 +1357,9 @@ public final class WgvpnService extends VpnService {
                     lastHealthSuccessElapsedMs = SystemClock.elapsedRealtime();
                     if (tunnelLatencyMs != previousLatencyMs) {
                         emitStatusOnly();
+                    }
+                    if (remoteSpeedRequestId != null) {
+                        handleRemoteSpeedTest(in, out, remoteSpeedRequestId);
                     }
                     // 等待下一个心跳周期（sleep 5s，可被 stop 唤醒）
                     long deadline = System.currentTimeMillis() + HEALTH_PING_INTERVAL_SEC * 1000L;
@@ -1451,26 +1473,7 @@ public final class WgvpnService extends VpnService {
     /** 桌面端同款流程：5 次 RTT → 上传、下载各自 SpeedStart/Ready + 单向 TCP 测速。 */
     private void runSpeedTest(java.io.DataInputStream in, java.io.DataOutputStream out, SpeedTestRequest request) {
         try {
-            long totalLatencyMs = 0;
-            for (int i = 0; i < SPEED_TEST_PING_COUNT; i++) {
-                long nonce = System.nanoTime();
-                long startedAt = System.nanoTime();
-                HealthFrameCodec.write(out, "{\"t\":\"SpeedPing\",\"c\":{\"nonce\":" + nonce + "}}");
-                JSONObject pong = readControlMessage(in);
-                JSONObject content = pong.optJSONObject("c");
-                if (!"SpeedPong".equals(pong.optString("t", "")) || content == null
-                        || content.optLong("nonce", Long.MIN_VALUE) != nonce) {
-                    throw new java.io.IOException("测速延迟响应无效：" + pong);
-                }
-                totalLatencyMs += TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
-            }
-            double uploadMbps = runSpeedTestDirection(in, out, false);
-            double downloadMbps = runSpeedTestDirection(in, out, true);
-            request.resultJson = new JSONObject()
-                    .put("latency_ms", totalLatencyMs / (double) SPEED_TEST_PING_COUNT)
-                    .put("upload_mbps", uploadMbps)
-                    .put("download_mbps", downloadMbps)
-                    .toString();
+            request.resultJson = performSpeedTest(in, out).toString();
         } catch (Exception e) {
             request.error = e.getMessage() == null ? "测速失败" : e.getMessage();
         } finally {
@@ -1478,11 +1481,61 @@ public final class WgvpnService extends VpnService {
         }
     }
 
+    /** 被动端下发请求后仍由本主动端作为 client 执行，并将主动端视角结果回传。 */
+    private void handleRemoteSpeedTest(java.io.DataInputStream in, java.io.DataOutputStream out,
+                                       long requestId) throws Exception {
+        synchronized (speedTestLock) {
+            if (speedTestRunning) {
+                sendSpeedTestError(out, requestId, "测速正在进行");
+                return;
+            }
+            speedTestRunning = true;
+        }
+        try {
+            JSONObject content = performSpeedTest(in, out).put("request_id", requestId);
+            HealthFrameCodec.write(out, new JSONObject()
+                    .put("t", "SpeedTestResult")
+                    .put("c", content)
+                    .toString());
+        } catch (Exception e) {
+            sendSpeedTestError(out, requestId,
+                    e.getMessage() == null ? "测速失败" : e.getMessage());
+        } finally {
+            synchronized (speedTestLock) {
+                speedTestRunning = false;
+            }
+        }
+    }
+
+    private JSONObject performSpeedTest(java.io.DataInputStream in,
+                                        java.io.DataOutputStream out) throws Exception {
+        long totalLatencyMs = 0;
+        for (int i = 0; i < SPEED_TEST_PING_COUNT; i++) {
+            long nonce = System.nanoTime();
+            long startedAt = System.nanoTime();
+            HealthFrameCodec.write(out,
+                    "{\"t\":\"SpeedPing\",\"c\":{\"nonce\":" + nonce + "}}");
+            JSONObject pong = readSpeedControlMessage(in, out);
+            JSONObject content = pong.optJSONObject("c");
+            if (!"SpeedPong".equals(pong.optString("t", "")) || content == null
+                    || content.optLong("nonce", Long.MIN_VALUE) != nonce) {
+                throw new java.io.IOException("测速延迟响应无效：" + pong);
+            }
+            totalLatencyMs += TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+        }
+        double uploadMbps = runSpeedTestDirection(in, out, false);
+        double downloadMbps = runSpeedTestDirection(in, out, true);
+        return new JSONObject()
+                .put("latency_ms", totalLatencyMs / (double) SPEED_TEST_PING_COUNT)
+                .put("upload_mbps", uploadMbps)
+                .put("download_mbps", downloadMbps);
+    }
+
     /** 单方向测速前都重新启动一次对端 one-off riperf3 server，对齐桌面端。 */
     private double runSpeedTestDirection(java.io.DataInputStream in, java.io.DataOutputStream out,
                                          boolean reverse) throws Exception {
         HealthFrameCodec.write(out, "{\"t\":\"SpeedStart\"}");
-        JSONObject ready = readControlMessage(in);
+        JSONObject ready = readSpeedControlMessage(in, out);
         if (!"SpeedReady".equals(ready.optString("t", ""))) {
             throw new java.io.IOException("对端未准备测速：" + ready);
         }
@@ -1493,8 +1546,28 @@ public final class WgvpnService extends VpnService {
         return mbps;
     }
 
-    private static JSONObject readControlMessage(java.io.DataInputStream in) throws Exception {
-        return new JSONObject(new String(HealthFrameCodec.read(in), java.nio.charset.StandardCharsets.UTF_8));
+    private static JSONObject readSpeedControlMessage(java.io.DataInputStream in,
+                                                      java.io.DataOutputStream out) throws Exception {
+        while (true) {
+            JSONObject message = new JSONObject(new String(
+                    HealthFrameCodec.read(in), java.nio.charset.StandardCharsets.UTF_8));
+            if (!"SpeedTestRequest".equals(message.optString("t", ""))) {
+                return message;
+            }
+            JSONObject content = message.optJSONObject("c");
+            long requestId = content == null ? 0 : content.optLong("request_id", 0);
+            sendSpeedTestError(out, requestId, "测速正在进行");
+        }
+    }
+
+    private static void sendSpeedTestError(java.io.DataOutputStream out, long requestId,
+                                           String error) throws Exception {
+        HealthFrameCodec.write(out, new JSONObject()
+                .put("t", "SpeedTestError")
+                .put("c", new JSONObject()
+                        .put("request_id", requestId)
+                        .put("message", error))
+                .toString());
     }
 
     private void broadcastSpeedResult(boolean success, double latencyMs, double downloadMbps,
