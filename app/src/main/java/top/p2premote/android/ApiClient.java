@@ -80,6 +80,7 @@ final class ApiClient {
         req.put("device_name", DeviceIdentity.deviceName());
         req.put("device_type", "android");
         req.put("system_version", DeviceIdentity.systemVersion());
+        req.put("client_version", BuildConfig.VERSION_NAME);
         req.put("device_uuid", DeviceIdentity.deviceUuid(context));
         req.put("lan_ip", "");
         req.put("public_ip", "");
