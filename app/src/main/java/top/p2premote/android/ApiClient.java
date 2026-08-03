@@ -197,16 +197,14 @@ final class ApiClient {
         request(serverUrl, "POST", "/api/v1/auth/verification-code", req, null);
     }
 
-    /**
-     * 邮箱注册新用户。注册后用户状态为 pending，需去邮箱点击激活链接。
-     * inviteCode 可选，传空串表示无邀请码。
-     */
+    /** 邮箱验证码注册新用户。inviteCode 可选，传空串表示无邀请码。 */
     void registerByEmail(String serverUrl, String username, String email,
-                         String password, String inviteCode) throws Exception {
+                         String password, String verificationCode, String inviteCode) throws Exception {
         JSONObject req = new JSONObject();
         req.put("username", username);
         req.put("email", email);
         req.put("password", password);
+        req.put("verification_code", verificationCode);
         if (inviteCode != null && !inviteCode.isEmpty()) {
             req.put("invite_code", inviteCode);
         }

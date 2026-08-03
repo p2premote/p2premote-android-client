@@ -17,6 +17,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.InputFilter;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -393,9 +394,13 @@ public final class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
         TextView brand = heading("创建账号");
-        TextView subtitle = muted("注册后将发送激活邮件，请前往邮箱激活");
+        TextView subtitle = muted("使用邮箱验证码完成注册");
         EditText regUsername = input("用户名（3-30位）", false);
         EditText regEmail = input("邮箱", false);
+        Button regSendCodeBtn = outlineButton("发送验证码", 0xFF2563EB);
+        EditText regVerificationCode = input("6位邮箱验证码（5分钟内有效）", false);
+        regVerificationCode.setInputType(InputType.TYPE_CLASS_NUMBER);
+        regVerificationCode.setFilters(new InputFilter[]{new InputFilter.LengthFilter(6)});
         EditText regPassword = input("密码（至少6位，含数字和字母）", true);
         EditText regConfirmPassword = input("确认密码", true);
         EditText regInviteCode = input("邀请码（选填）", false);
@@ -410,6 +415,8 @@ public final class MainActivity extends Activity {
         card.addView(spacer(6));
         card.addView(regUsername);
         card.addView(regEmail);
+        card.addView(regSendCodeBtn);
+        card.addView(regVerificationCode);
         card.addView(regPassword);
         card.addView(regConfirmPassword);
         card.addView(regInviteCode);
@@ -441,9 +448,25 @@ public final class MainActivity extends Activity {
 
         backToLogin.setOnClickListener(v -> showLogin());
 
+        regSendCodeBtn.setOnClickListener(v -> {
+            String email = regEmail.getText().toString().trim();
+            if (!android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
+                toast("请输入有效的邮箱地址");
+                return;
+            }
+            String serverUrl = (serverUrlRef[0] != null && !serverUrlRef[0].getText().toString().trim().isEmpty())
+                    ? serverUrlRef[0].getText().toString()
+                    : DEFAULT_SERVER_URL;
+            runAsync("正在发送验证码...", () -> {
+                apiClient.sendVerificationCode(serverUrl, email, "register");
+                return null;
+            }, _unused -> toast("验证码已发送，5分钟内有效，请检查邮箱"));
+        });
+
         registerBtn.setOnClickListener(v -> {
             String username = regUsername.getText().toString().trim();
             String email = regEmail.getText().toString().trim();
+            String verificationCode = regVerificationCode.getText().toString().trim();
             String password = regPassword.getText().toString();
             String confirmPassword = regConfirmPassword.getText().toString();
             String inviteCode = regInviteCode.getText().toString().trim();
@@ -452,6 +475,9 @@ public final class MainActivity extends Activity {
             if (username.length() > 30) { toast("用户名最多30个字符"); return; }
             if (!android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
                 toast("请输入有效的邮箱地址"); return;
+            }
+            if (!VerificationCodeValidator.isValidEmailCode(verificationCode)) {
+                toast("请输入6位数字邮箱验证码"); return;
             }
             if (password.length() < 6) { toast("密码至少6位"); return; }
             if (!password.matches(".*[0-9].*") || !password.matches(".*[a-zA-Z].*")) {
@@ -463,10 +489,10 @@ public final class MainActivity extends Activity {
                     ? serverUrlRef[0].getText().toString()
                     : DEFAULT_SERVER_URL;
             runAsync("正在注册...", () -> {
-                apiClient.registerByEmail(serverUrl, username, email, password, inviteCode);
+                apiClient.registerByEmail(serverUrl, username, email, password, verificationCode, inviteCode);
                 return null;
             }, _unused -> {
-                toast("注册成功！已发送激活邮件，请前往邮箱点击链接激活账号");
+                toast("注册成功，请登录");
                 showLogin();
             });
         });
@@ -499,6 +525,7 @@ public final class MainActivity extends Activity {
         EditText forgotEmail = input("注册邮箱", false);
         EditText forgotCaptcha = input("邮箱验证码（5分钟内有效）", false);
         forgotCaptcha.setInputType(InputType.TYPE_CLASS_NUMBER);
+        forgotCaptcha.setFilters(new InputFilter[]{new InputFilter.LengthFilter(6)});
         Button forgotSendBtn = outlineButton("发送验证码", 0xFF2563EB);
         EditText forgotNewPassword = input("新密码（至少6位，含数字和字母）", true);
         EditText forgotConfirmPassword = input("确认新密码", true);
@@ -581,7 +608,7 @@ public final class MainActivity extends Activity {
             String newPassword = forgotNewPassword.getText().toString();
             String confirmPassword = forgotConfirmPassword.getText().toString();
 
-            if (captcha.isEmpty()) { toast("请输入邮箱验证码"); return; }
+            if (!VerificationCodeValidator.isValidEmailCode(captcha)) { toast("请输入6位数字邮箱验证码"); return; }
             if (newPassword.length() < 6) { toast("新密码至少6位"); return; }
             if (!newPassword.matches(".*[0-9].*") || !newPassword.matches(".*[a-zA-Z].*")) {
                 toast("密码必须同时包含数字和字母"); return;
