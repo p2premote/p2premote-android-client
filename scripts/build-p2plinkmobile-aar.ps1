@@ -1,22 +1,31 @@
 param(
-    [string]$AndroidSdk = "$env:LOCALAPPDATA\Android\Sdk",
-    [string]$NdkVersion = "27.0.12077973"
+    [Parameter(Mandatory = $true)]
+    [string]$PunchSource,
+    [Parameter(Mandatory = $true)]
+    [string]$AndroidSdk,
+    [Parameter(Mandatory = $true)]
+    [string]$NdkVersion
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$goncDir = if ($env:P2PREMOTE_PUNCH_DIR) {
-    Resolve-Path $env:P2PREMOTE_PUNCH_DIR
-} else {
-    Resolve-Path (Join-Path $repoRoot "..\p2premote-punch")
-}
+$goncDir = Resolve-Path $PunchSource
 $outDir = Join-Path $repoRoot "app\libs"
 $outFile = Join-Path $outDir "p2plinkmobile.aar"
-$gomobile = Join-Path (go env GOPATH) "bin\gomobile.exe"
+$goCommand = Get-Command go -ErrorAction Stop
+$goPath = (& $goCommand.Source env GOPATH).Trim()
+if ($LASTEXITCODE -ne 0) {
+    throw "go env GOPATH failed with exit code $LASTEXITCODE"
+}
+$gomobile = Join-Path $goPath "bin\gomobile.exe"
 
 if (!(Test-Path $gomobile)) {
-    go install golang.org/x/mobile/cmd/gomobile@latest
+    throw "gomobile is not installed: $gomobile"
+}
+
+if (Test-Path -LiteralPath $outFile) {
+    throw "output already exists; remove it before rebuilding: $outFile"
 }
 
 $env:ANDROID_HOME = $AndroidSdk
@@ -35,8 +44,15 @@ try {
         -androidapi 23 `
         -o $outFile `
         ./mobile/p2plinkmobile
+    if ($LASTEXITCODE -ne 0) {
+        throw "gomobile bind failed with exit code $LASTEXITCODE"
+    }
 } finally {
     Pop-Location
+}
+
+if (-not (Test-Path -LiteralPath $outFile -PathType Leaf)) {
+    throw "AAR was not generated: $outFile"
 }
 
 Write-Host "built $outFile"

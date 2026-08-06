@@ -11,21 +11,31 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
 }
 
 $projectRoot = $PSScriptRoot
-$gitCommit = (git -C $projectRoot rev-parse --short=6 HEAD).Trim()
+$gitCommitOutput = & git -C $projectRoot rev-parse --short=6 HEAD
+if ($LASTEXITCODE -ne 0) {
+    throw "failed to resolve the current git commit id"
+}
+$gitCommit = $gitCommitOutput.Trim()
 if ($gitCommit -notmatch '^[0-9a-f]{6}$') {
     throw "failed to resolve the current git commit id"
 }
 $buildVersion = "$Version-$gitCommit"
 
 if (-not $env:ANDROID_HOME) {
-    $env:ANDROID_HOME = "C:\Users\LN\AppData\Local\Android\Sdk"
+    throw "ANDROID_HOME must be set to the Android SDK directory"
+}
+if (-not (Test-Path -LiteralPath $env:ANDROID_HOME -PathType Container)) {
+    throw "ANDROID_HOME does not exist: $env:ANDROID_HOME"
 }
 
 Write-Host "Building Android client version $buildVersion"
 
 Push-Location $projectRoot
 try {
-    .\gradlew.bat assembleDebug --no-daemon "-Pp2premoteClientVersion=$buildVersion"
+    & .\gradlew.bat assembleDebug --no-daemon "-Pp2premoteClientVersion=$buildVersion"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Gradle build failed with exit code $LASTEXITCODE"
+    }
 
     $apkDirectory = Join-Path $projectRoot 'app\build\outputs\apk\debug'
     $sourceApk = Join-Path $apkDirectory 'app-debug.apk'
@@ -33,7 +43,7 @@ try {
     if (-not (Test-Path -LiteralPath $sourceApk)) {
         throw "debug APK was not generated: $sourceApk"
     }
-    Move-Item -LiteralPath $sourceApk -Destination $versionedApk -Force
+    Move-Item -LiteralPath $sourceApk -Destination $versionedApk
     Write-Host "Generated APK: $versionedApk"
 }
 finally {

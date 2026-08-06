@@ -2,7 +2,11 @@ plugins {
     id "com.android.application"
 }
 
-def buildVersionName = providers.gradleProperty("p2premoteClientVersion").orElse("0.2.0").get()
+def buildVersionProperty = providers.gradleProperty("p2premoteClientVersion")
+if (!buildVersionProperty.isPresent()) {
+    throw new GradleException("p2premoteClientVersion is required; use build.ps1 -v <version>")
+}
+def buildVersionName = buildVersionProperty.get()
 
 android {
     namespace "top.p2premote.android"

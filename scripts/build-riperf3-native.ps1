@@ -1,19 +1,24 @@
 param(
-    [string]$AndroidSdk = "$env:LOCALAPPDATA\Android\Sdk",
+    [string]$AndroidSdk = "",
     [string]$NdkVersion = "27.0.12077973"
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+if (-not $AndroidSdk) {
+    if (-not $env:ANDROID_HOME) {
+        throw "Android SDK path is required: pass -AndroidSdk or set ANDROID_HOME"
+    }
+    $AndroidSdk = $env:ANDROID_HOME
+}
 $crateDir = Join-Path $repoRoot "riperf3-native"
 $jniRoot = Join-Path $repoRoot "app\src\main\jniLibs"
 $ndkRoot = Join-Path $AndroidSdk "ndk\$NdkVersion"
 $toolBin = Join-Path $ndkRoot "toolchains\llvm\prebuilt\windows-x86_64\bin"
 
-if (!(Get-Command cargo -ErrorAction SilentlyContinue) -or !(Get-Command rustup -ErrorAction SilentlyContinue)) {
-    throw "Rust toolchain is required: install rustup and cargo first"
-}
+$null = Get-Command cargo -ErrorAction Stop
+$null = Get-Command rustup -ErrorAction Stop
 if (!(Test-Path $ndkRoot)) {
     throw "Android NDK not found: $ndkRoot"
 }
@@ -38,8 +43,15 @@ try {
         & cargo build --release --target $target.Rust
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed: $($target.Rust)" }
         $destination = Join-Path $jniRoot "$($target.Abi)\libp2premote_riperf3_jni.so"
+        $source = Join-Path $crateDir "target\$($target.Rust)\release\libp2premote_riperf3_jni.so"
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "JNI library was not generated: $source"
+        }
         New-Item -ItemType Directory -Force (Split-Path $destination) | Out-Null
-        Copy-Item "target\$($target.Rust)\release\libp2premote_riperf3_jni.so" $destination -Force
+        Copy-Item -LiteralPath $source -Destination $destination -Force
+        if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) {
+            throw "JNI library was not copied: $destination"
+        }
     }
 } finally {
     Pop-Location
