@@ -597,7 +597,7 @@ public final class MainActivity extends Activity {
                 forgotNewPassword.setVisibility(View.VISIBLE);
                 forgotConfirmPassword.setVisibility(View.VISIBLE);
                 forgotResetBtn.setVisibility(View.VISIBLE);
-                toast("验证码已发送，5分钟内有效，请检查邮箱");
+                toast("如果该邮箱已注册，验证码将发送到邮箱，请注意查收");
             });
         });
 
