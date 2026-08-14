@@ -42,6 +42,24 @@ final class ApiClient {
         this.sessionStore = sessionStore;
     }
 
+    ClientVersionPolicy getClientVersionPolicy(String serverUrl) throws Exception {
+        JSONObject data = request(
+                serverUrl,
+                "GET",
+                "/api/v1/client/version-policy?target=android",
+                null,
+                null);
+        String latestVersion = data.optString("latest_version");
+        String minSupportedVersion = data.optString("min_supported_version");
+        if (latestVersion.isEmpty() || minSupportedVersion.isEmpty()) {
+            throw new IOException("版本策略响应缺少版本号");
+        }
+        return new ClientVersionPolicy(
+                latestVersion,
+                minSupportedVersion,
+                data.optString("release_notes"));
+    }
+
     LoginResult login(String serverUrl, String identifier, String password) throws Exception {
         JSONObject req = new JSONObject();
         req.put("identifier", identifier);

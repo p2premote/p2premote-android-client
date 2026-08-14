@@ -12,6 +12,7 @@ import android.content.IntentFilter;
 import android.graphics.Typeface;
 import android.graphics.Insets;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
@@ -47,6 +48,7 @@ public final class MainActivity extends Activity {
     private static final int PAGE_PROFILE = 2;
     private static final int VPN_PERMISSION_REQUEST = 100;
     private static final String DEFAULT_SERVER_URL = "https://cli.p2premote.top";
+    private static final String CLIENT_DOWNLOAD_PAGE_URL = "https://www.p2premote.top/#download";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -187,13 +189,113 @@ public final class MainActivity extends Activity {
         selectedDeviceId = sessionStore.getSelectedDeviceId();
         registerTunnelReceiver();
         requestNotificationPermissionIfNeeded();
+        checkVersionAtStartup();
+    }
+
+    /** 冷启动先检查 Android 平台策略，强制更新时不得恢复已有登录态。 */
+    private void checkVersionAtStartup() {
+        LinearLayout loading = new LinearLayout(this);
+        loading.setOrientation(LinearLayout.VERTICAL);
+        loading.setGravity(Gravity.CENTER);
+        loading.setPadding(dp(32), dp(32), dp(32), dp(32));
+        ProgressBar indicator = new ProgressBar(this);
+        loading.addView(indicator);
+        TextView message = muted("正在检查客户端版本...");
+        message.setPadding(0, dp(16), 0, 0);
+        loading.addView(message);
+        setContentView(loading);
+
+        Session existingSession = sessionStore.load();
+        String serverUrl = existingSession == null ? DEFAULT_SERVER_URL : existingSession.serverUrl;
+        final int generation = callbackGeneration;
+        executor.execute(() -> {
+            ClientVersionPolicy policy = null;
+            try {
+                policy = apiClient.getClientVersionPolicy(serverUrl);
+            } catch (Exception error) {
+                // 版本服务不可用时保持可用性；登录前仍会再次检查。
+                android.util.Log.w("p2pRemote", "version policy check failed", error);
+            }
+            ClientVersionPolicy checkedPolicy = policy;
+            mainHandler.post(() -> {
+                if (!acceptsCallback(generation)) return;
+                if (checkedPolicy != null && checkedPolicy.requiresForceUpdate(BuildConfig.VERSION_NAME)) {
+                    showForceUpdate(checkedPolicy);
+                    return;
+                }
+                continueAfterVersionCheck();
+                if (checkedPolicy != null && checkedPolicy.hasUpdate(BuildConfig.VERSION_NAME)) {
+                    showOptionalUpdate(checkedPolicy);
+                }
+            });
+        });
+    }
+
+    private void continueAfterVersionCheck() {
         if (sessionStore.load() == null) {
             showLogin();
-        } else {
-            // 已认证冷启动：启动在线保活后再刷新设备。
-            startPresenceService();
-            showApp(PAGE_CONNECT);
-            refreshDevices("正在同步设备...");
+            return;
+        }
+        // 已认证冷启动：版本通过后才启动在线保活并恢复主界面。
+        startPresenceService();
+        showApp(PAGE_CONNECT);
+        refreshDevices("正在同步设备...");
+    }
+
+    private void showOptionalUpdate(ClientVersionPolicy policy) {
+        String message = "发现新版本 v" + policy.latestVersion + "，当前版本为 v"
+                + BuildConfig.VERSION_NAME + "。是否前往官网下载？";
+        if (!policy.releaseNotes.isEmpty()) message += "\n\n" + policy.releaseNotes;
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("发现新版本")
+                .setMessage(message)
+                .setPositiveButton("前往官网下载", (dialog, which) -> openClientDownloadPage())
+                .setNegativeButton("稍后再说", null)
+                .show();
+    }
+
+    /** 强制更新页不可绕过；同时停止旧版本仍可能运行的连接服务。 */
+    private void showForceUpdate(ClientVersionPolicy policy) {
+        callbackGeneration++;
+        stopPresenceService();
+        Intent stopTunnelIntent = new Intent(this, WgvpnService.class);
+        stopTunnelIntent.setAction(WgvpnService.ACTION_STOP);
+        startService(stopTunnelIntent);
+
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setGravity(Gravity.CENTER);
+        page.setPadding(dp(32), dp(32), dp(32), dp(32));
+        page.addView(heading("客户端需要更新"));
+        page.addView(spacer(12));
+        page.addView(body("当前版本 v" + BuildConfig.VERSION_NAME + " 已不再受支持，请升级到 v"
+                + policy.minSupportedVersion + " 及以上版本后继续使用。"));
+        if (!policy.releaseNotes.isEmpty()) {
+            page.addView(spacer(12));
+            page.addView(helpText(policy.releaseNotes));
+        }
+        page.addView(spacer(24));
+        Button download = primaryButton("前往官网下载");
+        download.setOnClickListener(view -> openClientDownloadPage());
+        page.addView(download, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        Button exit = outlineButton("退出客户端", 0xFF475569);
+        exit.setOnClickListener(view -> finishAndRemoveTask());
+        LinearLayout.LayoutParams exitParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        exitParams.topMargin = dp(12);
+        page.addView(exit, exitParams);
+        setContentView(page);
+        openClientDownloadPage();
+    }
+
+    private void openClientDownloadPage() {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(CLIENT_DOWNLOAD_PAGE_URL)));
+        } catch (Exception error) {
+            toast("无法打开官网，请访问 " + CLIENT_DOWNLOAD_PAGE_URL);
         }
     }
 
@@ -355,20 +457,31 @@ public final class MainActivity extends Activity {
                 String serverUrl = (serverUrlRef[0] != null && !serverUrlRef[0].getText().toString().trim().isEmpty())
                         ? serverUrlRef[0].getText().toString()
                         : DEFAULT_SERVER_URL;
-            apiClient.login(
-                    serverUrl,
-                    identifier.getText().toString(),
-                    password.getText().toString());
-            apiClient.registerCurrentDevice(this);
-            return apiClient.listDevices();
-        }, devices -> {
-            cachedDevices.clear();
-            cachedDevices.addAll(devices);
-            currentPage = PAGE_CONNECT;
-            // 登录注册成功后启动在线保活（device_id/device_uuid 已持久化）。
-            startPresenceService();
-            showApp(PAGE_CONNECT);
-        });
+                try {
+                    ClientVersionPolicy policy = apiClient.getClientVersionPolicy(serverUrl);
+                    if (policy.requiresForceUpdate(BuildConfig.VERSION_NAME)) {
+                        throw new ForceUpdateRequiredException(policy);
+                    }
+                } catch (ForceUpdateRequiredException error) {
+                    throw error;
+                } catch (Exception error) {
+                    // 版本服务异常时不把网络故障误判成强制更新。
+                    android.util.Log.w("p2pRemote", "pre-login version check failed", error);
+                }
+                apiClient.login(
+                        serverUrl,
+                        identifier.getText().toString(),
+                        password.getText().toString());
+                apiClient.registerCurrentDevice(this);
+                return apiClient.listDevices();
+            }, devices -> {
+                cachedDevices.clear();
+                cachedDevices.addAll(devices);
+                currentPage = PAGE_CONNECT;
+                // 登录注册成功后启动在线保活（device_id/device_uuid 已持久化）。
+                startPresenceService();
+                showApp(PAGE_CONNECT);
+            });
         });
     }
 
@@ -1103,9 +1216,37 @@ public final class MainActivity extends Activity {
         devUuid.addView(helpText("设备 UUID（点击复制）"));
         contentRoot.addView(devUuid);
 
+        LinearLayout versionCard = card();
+        versionCard.addView(body("v" + BuildConfig.VERSION_NAME));
+        versionCard.addView(helpText("当前客户端版本"));
+        Button checkUpdate = outlineButton("检查更新", 0xFF2563EB);
+        LinearLayout.LayoutParams checkUpdateParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        checkUpdateParams.topMargin = dp(8);
+        versionCard.addView(checkUpdate, checkUpdateParams);
+        contentRoot.addView(versionCard);
+        checkUpdate.setOnClickListener(view -> checkVersionManually());
+
         Button logout = outlineButton("退出登录", 0xFFB91C1C);
         logout.setOnClickListener(v -> confirmLogout());
         contentRoot.addView(logout);
+    }
+
+    private void checkVersionManually() {
+        Session session = sessionStore.load();
+        if (session == null) return;
+        runAsync("正在检查更新...",
+                () -> apiClient.getClientVersionPolicy(session.serverUrl),
+                policy -> {
+                    if (policy.requiresForceUpdate(BuildConfig.VERSION_NAME)) {
+                        showForceUpdate(policy);
+                    } else if (policy.hasUpdate(BuildConfig.VERSION_NAME)) {
+                        showOptionalUpdate(policy);
+                    } else {
+                        toast("当前已经是最新版本");
+                    }
+                });
     }
 
     /**
@@ -1338,6 +1479,15 @@ public final class MainActivity extends Activity {
     private interface Task<T> { T run() throws Exception; }
     private interface Success<T> { void accept(T value); }
 
+    private static final class ForceUpdateRequiredException extends Exception {
+        final ClientVersionPolicy policy;
+
+        ForceUpdateRequiredException(ClientVersionPolicy policy) {
+            super("当前客户端版本已不再受支持");
+            this.policy = policy;
+        }
+    }
+
     private <T> void runAsync(String loadingText, Task<T> task, Success<T> success) {
         final int generation = callbackGeneration;
         setBusy(true, loadingText);
@@ -1353,6 +1503,11 @@ public final class MainActivity extends Activity {
                 android.util.Log.e("p2pRemote", "async failed", e);
                 mainHandler.post(() -> {
                     if (!acceptsCallback(generation)) return;
+                    if (e instanceof ForceUpdateRequiredException) {
+                        setBusy(false, "");
+                        showForceUpdate(((ForceUpdateRequiredException) e).policy);
+                        return;
+                    }
                     String friendly = friendlyError(e);
                     setBusy(false, friendly);
                     toast(friendly);
