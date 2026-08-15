@@ -166,6 +166,12 @@ final class ApiClient {
 
     void reportP2PEnd(OpenResult opened, DeviceItem target, boolean success,
                       String errorCode, String errorMessage) throws Exception {
+        reportP2PEnd(opened, target, success, "unknown", "unknown", errorCode, errorMessage);
+    }
+
+    void reportP2PEnd(OpenResult opened, DeviceItem target, boolean success,
+                      String sourceNatType, String targetNatType,
+                      String errorCode, String errorMessage) throws Exception {
         Session session = sessionStore.require();
         JSONObject req = new JSONObject();
         req.put("connection_id", opened.connectionId);
@@ -173,8 +179,8 @@ final class ApiClient {
         req.put("success", success);
         req.put("source_device_id", session.deviceId);
         req.put("target_device_id", target.id);
-        req.put("source_nat_type", "unknown");
-        req.put("target_nat_type", "unknown");
+        req.put("source_nat_type", sourceNatType == null || sourceNatType.isEmpty() ? "unknown" : sourceNatType);
+        req.put("target_nat_type", targetNatType == null || targetNatType.isEmpty() ? "unknown" : targetNatType);
         // 字段名必须为 error_message（对齐服务端 json tag），历史误用 error_msg 导致上报丢失。
         req.put("error_message", errorMessage == null ? "" : errorMessage);
         // 结构化错误码（≤64 字符，可选），对齐桌面 classify_tunnel_error_code 白名单。

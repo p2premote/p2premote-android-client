@@ -978,7 +978,15 @@ public final class WgvpnService extends VpnService {
 
                 // 步骤 9: 上报成功
                 try {
-                    apiClient.reportP2PEnd(opened, targetItem, true, "", "");
+                    apiClient.reportP2PEnd(
+                            opened,
+                            targetItem,
+                            true,
+                            tunnelResult.getLocalNATType(),
+                            tunnelResult.getRemoteNATType(),
+                            "",
+                            ""
+                    );
                 } catch (Exception reportError) {
                     Log.w(TAG, "p2p/end 上报失败（不影响隧道）: " + reportError.getMessage());
                 }
