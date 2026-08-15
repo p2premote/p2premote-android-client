@@ -392,7 +392,7 @@ public final class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
         TextView brand = heading("p2pRemote");
-        TextView subtitle = muted("手机远程连接入口");
+        TextView subtitle = muted("手机端 P2P 连接客户端");
         loginIdentifier = input("用户名或邮箱", false);
         loginPassword = input("密码", true);
         EditText identifier = loginIdentifier;
@@ -513,7 +513,7 @@ public final class MainActivity extends Activity {
         EditText regVerificationCode = input("6位邮箱验证码（5分钟内有效）", false);
         regVerificationCode.setInputType(InputType.TYPE_CLASS_NUMBER);
         regVerificationCode.setFilters(new InputFilter[]{new InputFilter.LengthFilter(6)});
-        EditText regPassword = input("密码（至少6位，含数字和字母）", true);
+        EditText regPassword = input("密码（至少 6 位）", true);
         EditText regConfirmPassword = input("确认密码", true);
         EditText regInviteCode = input("邀请码（选填）", false);
         Button registerBtn = primaryButton("注册");
@@ -592,9 +592,6 @@ public final class MainActivity extends Activity {
                 toast("请输入6位数字邮箱验证码"); return;
             }
             if (password.length() < 6) { toast("密码至少6位"); return; }
-            if (!password.matches(".*[0-9].*") || !password.matches(".*[a-zA-Z].*")) {
-                toast("密码必须同时包含数字和字母"); return;
-            }
             if (!confirmPassword.equals(password)) { toast("两次输入的密码不一致"); return; }
 
             String serverUrl = (serverUrlRef[0] != null && !serverUrlRef[0].getText().toString().trim().isEmpty())
@@ -639,7 +636,7 @@ public final class MainActivity extends Activity {
         forgotCaptcha.setInputType(InputType.TYPE_CLASS_NUMBER);
         forgotCaptcha.setFilters(new InputFilter[]{new InputFilter.LengthFilter(6)});
         Button forgotSendBtn = outlineButton("发送验证码", 0xFF2563EB);
-        EditText forgotNewPassword = input("新密码（至少6位，含数字和字母）", true);
+        EditText forgotNewPassword = input("新密码（至少 6 位）", true);
         EditText forgotConfirmPassword = input("确认新密码", true);
         Button forgotResetBtn = primaryButton("重置密码");
         progress = progressBar();
@@ -722,9 +719,6 @@ public final class MainActivity extends Activity {
 
             if (!VerificationCodeValidator.isValidEmailCode(captcha)) { toast("请输入6位数字邮箱验证码"); return; }
             if (newPassword.length() < 6) { toast("新密码至少6位"); return; }
-            if (!newPassword.matches(".*[0-9].*") || !newPassword.matches(".*[a-zA-Z].*")) {
-                toast("密码必须同时包含数字和字母"); return;
-            }
             if (!confirmPassword.equals(newPassword)) { toast("两次输入的密码不一致"); return; }
 
             String serverUrl = (serverUrlRef[0] != null && !serverUrlRef[0].getText().toString().trim().isEmpty())
@@ -827,7 +821,7 @@ public final class MainActivity extends Activity {
         connectBtn = null;
         connectBtnColor = 0;
         contentRoot.removeAllViews();
-        contentRoot.addView(topBar("连接", "手机主动控制端", false));
+        contentRoot.addView(topBar("连接", "手机端主动连接", false));
         contentRoot.addView(targetCard());
         contentRoot.addView(connectButton());
         contentRoot.addView(trafficCard());
