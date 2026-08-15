@@ -24,6 +24,9 @@ final class ApiClient {
     private static final int CONNECT_TIMEOUT_MS = 15_000;
     private static final int READ_TIMEOUT_MS = 30_000;
     private static final long TOTAL_REQUEST_TIMEOUT_MS = 45_000L;
+    private static final int VERSION_CONNECT_TIMEOUT_MS = 3_000;
+    private static final int VERSION_READ_TIMEOUT_MS = 2_000;
+    private static final long VERSION_TOTAL_TIMEOUT_MS = 5_000L;
     static final int MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
     private static final long TOKEN_REFRESH_SKEW_MS = 60_000L;
     /** 所有 ApiClient 实例共享一次 refresh，避免旋转型 refresh token 被并发消费。 */
@@ -43,12 +46,15 @@ final class ApiClient {
     }
 
     ClientVersionPolicy getClientVersionPolicy(String serverUrl) throws Exception {
-        JSONObject data = request(
+        JSONObject data = requestWithTimeouts(
                 serverUrl,
                 "GET",
                 "/api/v1/client/version-policy?target=android",
                 null,
-                null);
+                null,
+                VERSION_CONNECT_TIMEOUT_MS,
+                VERSION_READ_TIMEOUT_MS,
+                VERSION_TOTAL_TIMEOUT_MS);
         String latestVersion = data.optString("latest_version");
         String minSupportedVersion = data.optString("min_supported_version");
         if (latestVersion.isEmpty() || minSupportedVersion.isEmpty()) {
@@ -352,6 +358,13 @@ final class ApiClient {
 
     private JSONObject request(String serverUrl, String method, String path, JSONObject body, String bearerToken)
             throws Exception {
+        return requestWithTimeouts(serverUrl, method, path, body, bearerToken,
+                CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, TOTAL_REQUEST_TIMEOUT_MS);
+    }
+
+    private JSONObject requestWithTimeouts(String serverUrl, String method, String path, JSONObject body,
+                                            String bearerToken, int connectTimeoutMs, int readTimeoutMs,
+                                            long totalTimeoutMs) throws Exception {
         long startedNanos = System.nanoTime();
         URL url = new URL(normalizeServerUrl(serverUrl) + path);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -359,10 +372,10 @@ final class ApiClient {
         ScheduledFuture<?> deadline = REQUEST_DEADLINE_EXECUTOR.schedule(() -> {
             deadlineExceeded.set(true);
             conn.disconnect();
-        }, TOTAL_REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        }, totalTimeoutMs, TimeUnit.MILLISECONDS);
         try {
-            conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            conn.setReadTimeout(READ_TIMEOUT_MS);
+            conn.setConnectTimeout(connectTimeoutMs);
+            conn.setReadTimeout(readTimeoutMs);
             conn.setRequestMethod(method);
             conn.setRequestProperty("Accept", "application/json");
             if (bearerToken != null && !bearerToken.isEmpty()) {
@@ -384,7 +397,7 @@ final class ApiClient {
                 throw new IOException("服务端响应过大（上限 2 MiB）");
             }
             String raw = readFully(
-                    status >= 400 ? conn.getErrorStream() : conn.getInputStream(), startedNanos);
+                    status >= 400 ? conn.getErrorStream() : conn.getInputStream(), startedNanos, totalTimeoutMs);
             JSONObject envelope;
             try {
                 envelope = new JSONObject(raw);
@@ -410,7 +423,7 @@ final class ApiClient {
             return new JSONObject();
         } catch (IOException e) {
             if (deadlineExceeded.get()) {
-                SocketTimeoutException timeout = new SocketTimeoutException("请求总耗时超过 45 秒");
+                SocketTimeoutException timeout = new SocketTimeoutException("请求超时");
                 timeout.initCause(e);
                 throw timeout;
             }
@@ -422,6 +435,10 @@ final class ApiClient {
     }
 
     static String readFully(InputStream stream, long startedNanos) throws IOException {
+        return readFully(stream, startedNanos, TOTAL_REQUEST_TIMEOUT_MS);
+    }
+
+    private static String readFully(InputStream stream, long startedNanos, long totalTimeoutMs) throws IOException {
         if (stream == null) {
             return "{}";
         }
@@ -431,8 +448,8 @@ final class ApiClient {
             int read;
             while ((read = input.read(buffer)) != -1) {
                 if (TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos)
-                        >= TOTAL_REQUEST_TIMEOUT_MS) {
-                    throw new SocketTimeoutException("请求总耗时超过 45 秒");
+                        >= totalTimeoutMs) {
+                    throw new SocketTimeoutException("请求超时");
                 }
                 if (output.size() > MAX_RESPONSE_BYTES - read) {
                     throw new IOException("服务端响应过大（上限 2 MiB）");

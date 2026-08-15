@@ -200,7 +200,7 @@ public final class MainActivity extends Activity {
         loading.setPadding(dp(32), dp(32), dp(32), dp(32));
         ProgressBar indicator = new ProgressBar(this);
         loading.addView(indicator);
-        TextView message = muted("正在检查客户端版本...");
+        TextView message = muted(getString(R.string.version_checking));
         message.setPadding(0, dp(16), 0, 0);
         loading.addView(message);
         setContentView(loading);
@@ -243,14 +243,14 @@ public final class MainActivity extends Activity {
     }
 
     private void showOptionalUpdate(ClientVersionPolicy policy) {
-        String message = "发现新版本 v" + policy.latestVersion + "，当前版本为 v"
-                + BuildConfig.VERSION_NAME + "。是否前往官网下载？";
+        String message = getString(R.string.update_available_message,
+                policy.latestVersion, BuildConfig.VERSION_NAME);
         if (!policy.releaseNotes.isEmpty()) message += "\n\n" + policy.releaseNotes;
         new android.app.AlertDialog.Builder(this)
-                .setTitle("发现新版本")
+                .setTitle(R.string.update_available_title)
                 .setMessage(message)
-                .setPositiveButton("前往官网下载", (dialog, which) -> openClientDownloadPage())
-                .setNegativeButton("稍后再说", null)
+                .setPositiveButton(R.string.open_download_page, (dialog, which) -> openClientDownloadPage())
+                .setNegativeButton(R.string.update_later, null)
                 .show();
     }
 
@@ -266,21 +266,21 @@ public final class MainActivity extends Activity {
         page.setOrientation(LinearLayout.VERTICAL);
         page.setGravity(Gravity.CENTER);
         page.setPadding(dp(32), dp(32), dp(32), dp(32));
-        page.addView(heading("客户端需要更新"));
+        page.addView(heading(getString(R.string.force_update_title)));
         page.addView(spacer(12));
-        page.addView(body("当前版本 v" + BuildConfig.VERSION_NAME + " 已不再受支持，请升级到 v"
-                + policy.minSupportedVersion + " 及以上版本后继续使用。"));
+        page.addView(body(getString(R.string.force_update_message,
+                BuildConfig.VERSION_NAME, policy.minSupportedVersion)));
         if (!policy.releaseNotes.isEmpty()) {
             page.addView(spacer(12));
             page.addView(helpText(policy.releaseNotes));
         }
         page.addView(spacer(24));
-        Button download = primaryButton("前往官网下载");
+        Button download = primaryButton(getString(R.string.open_download_page));
         download.setOnClickListener(view -> openClientDownloadPage());
         page.addView(download, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
-        Button exit = outlineButton("退出客户端", 0xFF475569);
+        Button exit = outlineButton(getString(R.string.exit_client), 0xFF475569);
         exit.setOnClickListener(view -> finishAndRemoveTask());
         LinearLayout.LayoutParams exitParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -288,14 +288,13 @@ public final class MainActivity extends Activity {
         exitParams.topMargin = dp(12);
         page.addView(exit, exitParams);
         setContentView(page);
-        openClientDownloadPage();
     }
 
     private void openClientDownloadPage() {
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(CLIENT_DOWNLOAD_PAGE_URL)));
         } catch (Exception error) {
-            toast("无法打开官网，请访问 " + CLIENT_DOWNLOAD_PAGE_URL);
+            toast(getString(R.string.open_website_failed, CLIENT_DOWNLOAD_PAGE_URL));
         }
     }
 
@@ -1218,8 +1217,8 @@ public final class MainActivity extends Activity {
 
         LinearLayout versionCard = card();
         versionCard.addView(body("v" + BuildConfig.VERSION_NAME));
-        versionCard.addView(helpText("当前客户端版本"));
-        Button checkUpdate = outlineButton("检查更新", 0xFF2563EB);
+        versionCard.addView(helpText(getString(R.string.current_version)));
+        Button checkUpdate = outlineButton(getString(R.string.check_for_updates), 0xFF2563EB);
         LinearLayout.LayoutParams checkUpdateParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -1244,7 +1243,7 @@ public final class MainActivity extends Activity {
                     } else if (policy.hasUpdate(BuildConfig.VERSION_NAME)) {
                         showOptionalUpdate(policy);
                     } else {
-                        toast("当前已经是最新版本");
+                        toast(getString(R.string.already_latest));
                     }
                 });
     }
@@ -1483,7 +1482,7 @@ public final class MainActivity extends Activity {
         final ClientVersionPolicy policy;
 
         ForceUpdateRequiredException(ClientVersionPolicy policy) {
-            super("当前客户端版本已不再受支持");
+            super("force update required");
             this.policy = policy;
         }
     }
