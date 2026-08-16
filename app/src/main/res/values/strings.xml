@@ -12,5 +12,5 @@
     <string name="current_version">当前客户端版本</string>
     <string name="check_for_updates">检查更新</string>
     <string name="already_latest">当前已经是最新版本</string>
-    <string name="force_update_required">当前客户端版本已不再受支持</string>
+    <string name="checking_for_updates">正在检查更新...</string>
 </resources>

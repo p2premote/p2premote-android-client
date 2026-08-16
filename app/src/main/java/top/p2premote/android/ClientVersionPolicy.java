@@ -20,36 +20,51 @@ final class ClientVersionPolicy {
         return compare(currentVersion, latestVersion) < 0;
     }
 
+    // Semantics must stay in sync with the desktop client's
+    // core/src/update.rs is_version_less/version_parts: any number of
+    // segments, missing segments default to 0, segments that fail to parse
+    // (or overflow) are treated as 0. Changing either side requires
+    // updating the other.
     static int compare(String left, String right) {
         long[] leftParts = numericParts(left);
         long[] rightParts = numericParts(right);
-        for (int index = 0; index < 3; index++) {
-            int compared = Long.compare(leftParts[index], rightParts[index]);
+        int length = Math.max(leftParts.length, rightParts.length);
+        for (int index = 0; index < length; index++) {
+            long leftPart = index < leftParts.length ? leftParts[index] : 0;
+            long rightPart = index < rightParts.length ? rightParts[index] : 0;
+            int compared = Long.compare(leftPart, rightPart);
             if (compared != 0) return compared;
         }
         return 0;
     }
 
+    // Mirrors version_parts in the desktop client's core/src/update.rs:
+    // trim whitespace, strip leading v/V prefixes, split on '.' into any
+    // number of segments, and keep only the leading ASCII digits of each
+    // segment (so build suffixes like "1.7.9-f9fec8" yield 9). A segment
+    // with no digits, or one whose digits overflow, is 0.
     private static long[] numericParts(String version) {
-        long[] result = new long[] {0, 0, 0};
-        if (version == null) return result;
+        if (version == null) return new long[0];
         String normalized = version.trim();
-        if (normalized.startsWith("v") || normalized.startsWith("V")) {
+        while (!normalized.isEmpty()
+                && (normalized.charAt(0) == 'v' || normalized.charAt(0) == 'V')) {
             normalized = normalized.substring(1);
         }
-        String[] parts = normalized.split("\\.", 4);
-        for (int index = 0; index < Math.min(3, parts.length); index++) {
-            StringBuilder digits = new StringBuilder();
-            for (int charIndex = 0; charIndex < parts[index].length(); charIndex++) {
-                char value = parts[index].charAt(charIndex);
-                if (!Character.isDigit(value)) break;
-                digits.append(value);
+        String[] parts = normalized.split("\\.");
+        long[] result = new long[parts.length];
+        for (int index = 0; index < parts.length; index++) {
+            String part = parts[index];
+            int digitsEnd = 0;
+            while (digitsEnd < part.length()
+                    && part.charAt(digitsEnd) >= '0'
+                    && part.charAt(digitsEnd) <= '9') {
+                digitsEnd++;
             }
-            if (digits.length() == 0) continue;
+            if (digitsEnd == 0) continue;
             try {
-                result[index] = Long.parseLong(digits.toString());
+                result[index] = Long.parseLong(part.substring(0, digitsEnd));
             } catch (NumberFormatException ignored) {
-                result[index] = Long.MAX_VALUE;
+                result[index] = 0;
             }
         }
         return result;

@@ -10,7 +10,7 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "version must be in semver format like 1.2.3"
 }
 
-$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+if (-not $env:ANDROID_HOME) { $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk" }
 $env:Path += ";$env:ANDROID_HOME\platform-tools;$env:ANDROID_HOME\cmdline-tools\latest\bin"
 
 $projectRoot = $PSScriptRoot

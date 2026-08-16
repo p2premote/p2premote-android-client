@@ -1229,7 +1229,7 @@ public final class MainActivity extends Activity {
     private void checkVersionManually() {
         Session session = sessionStore.load();
         if (session == null) return;
-        runAsync("正在检查更新...",
+        runAsync(getString(R.string.checking_for_updates),
                 () -> apiClient.getClientVersionPolicy(session.serverUrl),
                 policy -> {
                     if (policy.requiresForceUpdate(BuildConfig.VERSION_NAME)) {
