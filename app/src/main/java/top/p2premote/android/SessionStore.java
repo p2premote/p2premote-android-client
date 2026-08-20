@@ -24,6 +24,11 @@ final class SessionStore {
     private static final String REFRESH_TOKEN = "refresh_token";
     private static final String ACCESS_TOKEN_EXPIRES_AT = "access_token_expires_at";
     private static final String USERNAME = "username";
+    private static final String MEMBER_LEVEL = "member_level";
+    private static final String MEMBER_EXPIRE_TIME = "member_expire_time";
+    private static final String TRIAL_EXPIRE_TIME = "trial_expire_time";
+    private static final String TRIAL_REMAINING_DAYS = "trial_remaining_days";
+    private static final String IS_PRO = "is_pro";
     private static final String DEVICE_ID = "device_id";
     private static final String DEVICE_UUID = "device_uuid";
     private static final String WG_PRIVATE_KEY = "wg_private_key_hex";
@@ -65,6 +70,11 @@ final class SessionStore {
                 refreshToken,
                 prefs.getLong(ACCESS_TOKEN_EXPIRES_AT, 0),
                 prefs.getString(USERNAME, ""),
+                prefs.getString(MEMBER_LEVEL, ""),
+                prefs.getString(MEMBER_EXPIRE_TIME, ""),
+                prefs.getString(TRIAL_EXPIRE_TIME, ""),
+                prefs.getInt(TRIAL_REMAINING_DAYS, 0),
+                prefs.getBoolean(IS_PRO, false),
                 prefs.getLong(DEVICE_ID, 0),
                 prefs.getString(DEVICE_UUID, ""),
                 prefs.getString(WG_PRIVATE_KEY, ""),
@@ -115,6 +125,11 @@ final class SessionStore {
                 .putString(REFRESH_TOKEN, session.refreshToken)
                 .putLong(ACCESS_TOKEN_EXPIRES_AT, session.accessTokenExpiresAt)
                 .putString(USERNAME, session.username)
+                .putString(MEMBER_LEVEL, session.memberLevel)
+                .putString(MEMBER_EXPIRE_TIME, session.memberExpireTime)
+                .putString(TRIAL_EXPIRE_TIME, session.trialExpireTime)
+                .putInt(TRIAL_REMAINING_DAYS, session.trialRemainingDays)
+                .putBoolean(IS_PRO, session.isPro)
                 .putLong(DEVICE_ID, session.deviceId)
                 .putString(DEVICE_UUID, session.deviceUuid)
                 .putString(WG_PRIVATE_KEY, session.wgPrivateKeyHex)
@@ -134,7 +149,9 @@ final class SessionStore {
     }
 
     Session updateTokensIfCurrent(Session expected, String accessToken, String refreshToken,
-                                  long expiresAt, String username) {
+                                  long expiresAt, String username, String memberLevel,
+                                  String memberExpireTime, String trialExpireTime,
+                                  int trialRemainingDays, boolean isPro) {
         synchronized (STORE_LOCK) {
             Session current = loadLocked();
             if (current == null
@@ -142,7 +159,8 @@ final class SessionStore {
                     || !current.refreshToken.equals(expected.refreshToken)) {
                 throw new IllegalStateException("登录态已变化，丢弃迟到的刷新结果");
             }
-            Session updated = current.withTokens(accessToken, refreshToken, expiresAt, username);
+            Session updated = current.withTokens(accessToken, refreshToken, expiresAt, username,
+                    memberLevel, memberExpireTime, trialExpireTime, trialRemainingDays, isPro);
             saveLockedDurably(updated);
             return updated;
         }

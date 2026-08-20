@@ -12,6 +12,8 @@ final class DeviceItem {
     final int servicePort;
     /** 公网 IP 地理位置（服务端 device 模型新增字段）。 */
     final String publicIpLocation;
+    final String systemVersion;
+    final String clientVersion;
 
     DeviceItem(
             long id,
@@ -24,7 +26,7 @@ final class DeviceItem {
             String lanIp,
             int servicePort
     ) {
-        this(id, name, alias, type, uuid, status, publicIp, lanIp, servicePort, "");
+        this(id, name, alias, type, uuid, status, publicIp, lanIp, servicePort, "", "", "");
     }
 
     DeviceItem(
@@ -37,7 +39,9 @@ final class DeviceItem {
             String publicIp,
             String lanIp,
             int servicePort,
-            String publicIpLocation
+            String publicIpLocation,
+            String systemVersion,
+            String clientVersion
     ) {
         this.id = id;
         this.name = name == null ? "" : name;
@@ -49,6 +53,8 @@ final class DeviceItem {
         this.lanIp = lanIp == null ? "" : lanIp;
         this.servicePort = servicePort;
         this.publicIpLocation = publicIpLocation == null ? "" : publicIpLocation;
+        this.systemVersion = systemVersion == null ? "" : systemVersion;
+        this.clientVersion = clientVersion == null ? "" : clientVersion;
     }
 
     String displayName() {

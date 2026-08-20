@@ -88,6 +88,11 @@ final class ApiClient {
                 refreshToken,
                 System.currentTimeMillis() + expiresIn * 1000L,
                 username,
+                user == null ? "" : user.optString("member_level"),
+                user == null ? "" : user.optString("member_expire_time"),
+                user == null ? "" : user.optString("trial_expire_time"),
+                user == null ? 0 : user.optInt("trial_remaining_days", 0),
+                user != null && user.optBoolean("is_pro", false),
                 0,
                 "",
                 "",
@@ -298,6 +303,15 @@ final class ApiClient {
         long expiresIn = data.optLong("expires_in", 0);
         JSONObject user = data.optJSONObject("user");
         String username = user == null ? session.username : user.optString("username", session.username);
+        String memberLevel = user == null
+                ? session.memberLevel : user.optString("member_level", session.memberLevel);
+        String memberExpireTime = user == null
+                ? session.memberExpireTime : user.optString("member_expire_time", session.memberExpireTime);
+        String trialExpireTime = user == null
+                ? session.trialExpireTime : user.optString("trial_expire_time", session.trialExpireTime);
+        int trialRemainingDays = user == null
+                ? session.trialRemainingDays : user.optInt("trial_remaining_days", session.trialRemainingDays);
+        boolean isPro = user == null ? session.isPro : user.optBoolean("is_pro", session.isPro);
 
         if (accessToken.isEmpty() || refreshToken.isEmpty()) {
             throw new IOException("刷新登录态失败：响应缺少令牌");
@@ -308,7 +322,12 @@ final class ApiClient {
                 accessToken,
                 refreshToken,
                 System.currentTimeMillis() + expiresIn * 1000L,
-                username);
+                username,
+                memberLevel,
+                memberExpireTime,
+                trialExpireTime,
+                trialRemainingDays,
+                isPro);
     }
 
     private DeviceItem parseDevice(JSONObject item) {
@@ -322,7 +341,9 @@ final class ApiClient {
                 item.optString("public_ip"),
                 item.optString("lan_ip"),
                 item.optInt("service_port", 3389),
-                item.optString("public_ip_location")
+                item.optString("public_ip_location"),
+                item.optString("system_version"),
+                item.optString("client_version")
         );
     }
 

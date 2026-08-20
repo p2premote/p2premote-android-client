@@ -1692,15 +1692,21 @@ public final class WgvpnService extends VpnService {
     private void stopTunnel(String message) {
         stopTrafficPolling();
         stopHealthClient();
-        cleanupNative();
+        String cleanupError = cleanupNative();
         connectedAtMs = 0;
         cumulativeRx = 0;
         cumulativeTx = 0;
         lastSampleRx = 0;
         lastSampleTx = 0;
         tunnelLatencyMs = -1;
-        emit(TunnelState.STOPPED, message, "", "", "");
-        stopForeground(true);
+        if (cleanupError.isEmpty()) {
+            emit(TunnelState.STOPPED, message, "", "", "");
+            stopForeground(true);
+        } else {
+            Log.e(TAG, "tunnel cleanup incomplete: " + cleanupError);
+            emit(TunnelState.FAILED, "隧道清理失败：" + cleanupError, "", "", "");
+            stopForeground(false);
+        }
         stopSelf();
     }
 
@@ -1726,46 +1732,74 @@ public final class WgvpnService extends VpnService {
     /**
      * 清理 native 资源：WG -> gonc -> TUN。
      */
-    private void cleanupNative() {
+    private String cleanupNative() {
+        StringBuilder errors = new StringBuilder();
         releaseTunnelWakeLock();
+        // wgStart 成功后 TUN fd 已通过 detachFd() 转交 native。必须在修改
+        // wgRunning 前保存所有权，避免 wgStop 后再次关闭同一个 fd。
+        boolean tunOwnedByJava = !wgRunning;
+        Exception peerRemovalError = null;
         // 移除 WG peer
         if (wgRunning && !peerPubkeyHex.isEmpty()) {
             try {
                 Libwgmobile.wgRemovePeer(peerPubkeyHex);
+                peerPubkeyHex = "";
             } catch (Exception e) {
                 Log.w(TAG, "wgRemovePeer error: " + e.getMessage());
+                // 后续 wgStop 成功会释放整个 WireGuard 实例，可覆盖单个 peer
+                // 删除失败；只有 wgStop 也失败时才将其计为未完成清理。
+                peerRemovalError = e;
             }
         }
         // 停止 gonc UDP tunnel
         if (!goncHandleId.isEmpty()) {
             try {
                 Wgvpnmobile.stopUdpTunnel(goncHandleId);
+                goncHandleId = "";
             } catch (Exception e) {
                 Log.w(TAG, "stopUdpTunnel error: " + e.getMessage());
+                appendCleanupError(errors, "停止 UDP tunnel", e);
             }
         }
         // 停止 userspace WG
         if (wgRunning) {
             try {
                 Libwgmobile.wgStop();
+                wgRunning = false;
+                // wgStart 成功后 fd 已由 native 接管，wgStop 成功即代表该 fd
+                // 已完成释放；这里只丢弃 Java 侧已 detach 的包装对象。
+                tunFd = null;
+                peerPubkeyHex = "";
             } catch (Exception e) {
                 Log.w(TAG, "wgStop error: " + e.getMessage());
+                if (peerRemovalError != null) {
+                    appendCleanupError(errors, "移除 WireGuard peer", peerRemovalError);
+                }
+                appendCleanupError(errors, "停止 WireGuard", e);
             }
-            wgRunning = false;
         }
         // 关闭 TUN fd。
         // 成功路径下 fd 已 detachFd() 转交 native（由 WgStop 关闭），这里 tunFd 不可再关；
         // 仅在 wgStart 之前失败（wgRunning=false，fd 仍归 Java）时由这里负责关闭。
-        if (tunFd != null && !wgRunning) {
+        if (tunFd != null && tunOwnedByJava) {
             try {
                 tunFd.close();
+                tunFd = null;
             } catch (Exception e) {
                 Log.w(TAG, "tunFd close error: " + e.getMessage());
+                appendCleanupError(errors, "关闭 TUN", e);
             }
         }
-        tunFd = null;
-        goncHandleId = "";
-        peerPubkeyHex = "";
+        return errors.toString();
+    }
+
+    private static void appendCleanupError(StringBuilder errors, String operation, Exception error) {
+        if (errors.length() > 0) errors.append("；");
+        errors.append(operation).append("失败");
+        String message = error.getMessage();
+        if (message != null && !message.trim().isEmpty()) {
+            errors.append("（").append(message.trim()).append("）");
+        }
     }
 
     private void emit(String state, String message, String vIp, String peerIp, String lan) {

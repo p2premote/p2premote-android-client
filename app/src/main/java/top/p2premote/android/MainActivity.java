@@ -1102,6 +1102,12 @@ public final class MainActivity extends Activity {
         row.addView(statusChip("本机", 0xFF2563EB));
         card.addView(row);
         card.addView(helpText(self.type.isEmpty() ? "本机设备" : self.type + " · 本机"));
+        if (!self.systemVersion.isEmpty()) {
+            card.addView(helpText("系统版本：" + self.systemVersion));
+        }
+        if (!self.clientVersion.isEmpty()) {
+            card.addView(helpText("客户端版本：" + self.clientVersion));
+        }
 
         TextView editAlias = helpText("点击修改别名");
         editAlias.setTextColor(0xFF2563EB);
@@ -1142,6 +1148,12 @@ public final class MainActivity extends Activity {
                 isOnline(device) ? 0xFF16A34A : 0xFF64748B));
         card.addView(row);
         card.addView(helpText(device.type + " · ID " + device.id));
+        if (!device.systemVersion.isEmpty()) {
+            card.addView(helpText("系统版本：" + device.systemVersion));
+        }
+        if (!device.clientVersion.isEmpty()) {
+            card.addView(helpText("客户端版本：" + device.clientVersion));
+        }
         if (!canAcceptP2P) {
             card.addView(helpText("该设备不能作为连接目标"));
         }
@@ -1176,6 +1188,28 @@ public final class MainActivity extends Activity {
         LinearLayout account = card();
         account.addView(body(session == null || session.username.isEmpty() ? "已登录" : session.username));
         account.addView(helpText("当前账号"));
+        if (session != null) {
+            String membership;
+            if ("pro".equalsIgnoreCase(session.memberLevel)) {
+                membership = "Pro 会员";
+            } else if (session.isPro) {
+                membership = "Pro 试用";
+            } else if ("free".equalsIgnoreCase(session.memberLevel)) {
+                membership = "免费会员";
+            } else {
+                membership = session.memberLevel;
+            }
+            if (membership == null || membership.trim().isEmpty()) membership = "免费会员";
+            account.addView(helpText("会员状态：" + membership));
+            if (session.isPro && !session.trialExpireTime.isEmpty()
+                    && !"pro".equalsIgnoreCase(session.memberLevel)) {
+                account.addView(helpText("试用到期：" + session.trialExpireTime
+                        + (session.trialRemainingDays > 0
+                        ? "（剩余 " + session.trialRemainingDays + " 天）" : "")));
+            } else if (!session.memberExpireTime.isEmpty()) {
+                account.addView(helpText("会员到期：" + session.memberExpireTime));
+            }
+        }
         contentRoot.addView(account);
 
         // 本机设备别名（可编辑）
