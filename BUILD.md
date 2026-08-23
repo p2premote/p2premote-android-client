@@ -37,6 +37,25 @@ $env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
 app\build\outputs\apk\debug\p2pRemote-1.6.4-<git-sha>.apk
 ```
 
+## 编译 Release APK
+
+在 `p2premote-android-client` 项目根目录执行：
+
+```powershell
+.\build.ps1 -v 1.6.4 --release
+```
+
+也可以使用完整参数 `-Configuration Release`。
+
+脚本会执行 `assembleRelease`，并将默认生成的 `app-release-unsigned.apk`
+重命名为带版本号的 APK：
+
+```text
+app\build\outputs\apk\release\p2pRemote-1.6.4-<git-sha>.apk
+```
+
+Release 构建默认未配置签名，因此生成的是未签名 APK；发布前需要使用正式签名配置签名。
+
 ## ABI 支持
 
 当前 Android APK 的 native ABI 为：
@@ -54,5 +73,14 @@ ABI 由 `app/build.gradle` 的 `abiFilters` 控制。修改 ABI 后，需要同�
 .\gradlew.bat assembleDebug --no-daemon `
   '-Pp2premoteClientVersion=1.6.4-local'
 ```
+
+直接构建 Release 时：
+
+```powershell
+.\gradlew.bat assembleRelease --no-daemon `
+  '-Pp2premoteClientVersion=1.6.4-local'
+```
+
+直接使用 Gradle 不会重命名 APK；需要带版本号的文件名时，请使用上面的 `build.ps1 -Configuration Release`。
 
 推荐使用 `build.ps1 -v <version>`，这样会自动构建 native 依赖并检查 APK 是否生成。
