@@ -871,7 +871,6 @@ public final class WgvpnService extends VpnService {
                 tunnelReq.put("token", punchToken);
                 tunnelReq.put("role_hint", "active");
                 tunnelReq.put("traversal_mode", "auto");
-                tunnelReq.put("plain_transport", true);
                 tunnelReq.put("network", "udp4");
                 tunnelReq.put("timeout_secs", UDP_TUNNEL_TIMEOUT_SEC);
                 tunnelReq.put("local_listen_ip", "127.0.0.1");
