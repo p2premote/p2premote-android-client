@@ -870,6 +870,7 @@ public final class WgvpnService extends VpnService {
                 JSONObject tunnelReq = new JSONObject();
                 tunnelReq.put("token", punchToken);
                 tunnelReq.put("role_hint", "active");
+                tunnelReq.put("traversal_mode", "auto");
                 tunnelReq.put("network", "udp4");
                 tunnelReq.put("timeout_secs", UDP_TUNNEL_TIMEOUT_SEC);
                 tunnelReq.put("local_listen_ip", "127.0.0.1");
@@ -888,6 +889,8 @@ public final class WgvpnService extends VpnService {
                 if (localForwardPort <= 0) {
                     throw new IllegalStateException("gonc 未返回有效本地转发端口");
                 }
+                Log.i(TAG, "gonc traversal selected=" + tunnelResult.getSelectedTraversal()
+                        + " peerEndpoint=" + tunnelResult.getPeerEndpoint());
 
                 // 步骤 5: VpnService establish TUN fd
                 emit(TunnelState.CONNECTING, "正在建立虚拟网卡", myVirtualIp, peerVirtualIp, exposedLan);
