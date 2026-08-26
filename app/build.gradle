@@ -36,6 +36,9 @@ android {
 
     buildTypes {
         release {
+            // 当前发行包与调试包共用本机 Gradle debug keystore，确保生成的
+            // release APK 可直接安装。后续升级必须继续使用同一份 keystore。
+            signingConfig signingConfigs.debug
             // 启用 R8 代码裁剪/混淆。gomobile 绑定类通过 JNI 反射调用，
             // 必须用 proguard-rules.pro keep 保护，否则 release 包必崩。
             minifyEnabled true

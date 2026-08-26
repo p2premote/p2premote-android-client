@@ -32,6 +32,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import libwgmobile.Keypair;
 import libwgmobile.Libwgmobile;
@@ -308,7 +309,11 @@ public final class WgvpnService extends VpnService {
     }
 
     private void stopIfNoTunnelWork(int startId) {
-        if (TunnelState.isTerminal(activeState) && !automaticRecoveryInProgress) {
+        // ACTION_START 将 native 工作排入 executor 后，状态仍可能短暂保持 IDLE。
+        // VPN 授权返回触发的 Activity.onResume 会紧接着发送 ACTION_QUERY；此时若仅
+        // 检查 activeState，会误停掉已有手动启动任务，并使其随后因 generation 失效。
+        if (TunnelState.isTerminal(activeState) && !automaticRecoveryInProgress
+                && !manualStartQueued.get()) {
             stopSelfResult(startId);
         }
     }
@@ -748,21 +753,40 @@ public final class WgvpnService extends VpnService {
                 if (!ws.isConnected()) {
                     throw new IllegalStateException("WebSocket 未连接，无法发送打洞信令");
                 }
-                // 注册被动端回应监听（attempt_ready/attempt_failed）
+                // 注册被动端回应监听（attempt_ready、审批事件、attempt_failed）。
+                // approval_required 只表示“需要审批”，最终等待必须由
+                // approval_granted/denied/timeout 释放。
                 final java.util.concurrent.CountDownLatch readyLatch = new java.util.concurrent.CountDownLatch(1);
+                final java.util.concurrent.CountDownLatch approvalDecisionLatch = new java.util.concurrent.CountDownLatch(1);
                 final String[] readyResult = {"timeout", ""};
                 final int[] readyRdpPort = {0};
-                ws.setPeerNotifyListener((type, aid, rdpPort, error) -> {
+                final AtomicBoolean approvalRequired = new AtomicBoolean(false);
+                final AtomicReference<String> approvalResult = new AtomicReference<>("pending");
+                ws.setPeerNotifyListener((type, aid, rdpPort, approvalRequiredFromReady, expiresAt, error) -> {
                     if (!attemptId.equals(aid)) {
                         return;  // 忽略非本次 attempt 的回应
                     }
-                    readyResult[0] = type;
                     if ("attempt_ready".equals(type)) {
+                        readyResult[0] = type;
                         readyRdpPort[0] = rdpPort;
+                        // attempt_ready 是审批要求的权威来源；OR 保留极端情况下
+                        // 先收到 approval_required 再收到 ready 的 fail-safe 状态。
+                        approvalRequired.compareAndSet(false, approvalRequiredFromReady);
+                        readyLatch.countDown();
+                    } else if ("approval_required".equals(type)) {
+                        approvalRequired.set(true);
+                        Log.i(TAG, "approval_required received: expiresAt=" + expiresAt);
+                        // 这里只记录要求，不释放最终审批等待。
+                    } else if ("approval_granted".equals(type)
+                            || "approval_denied".equals(type)
+                            || "approval_timeout".equals(type)) {
+                        approvalResult.set(type);
+                        approvalDecisionLatch.countDown();
                     } else {
+                        readyResult[0] = type;
                         readyResult[1] = error != null ? error : "unknown";
+                        readyLatch.countDown();
                     }
-                    readyLatch.countDown();
                 });
 
                 // 构造 attempt_start 消息体（嵌套 JSON 字符串，对齐桌面 P2PAttemptMessage::AttemptStart）
@@ -803,7 +827,6 @@ public final class WgvpnService extends VpnService {
                     sendAttemptCancel(ws, opened, targetDeviceId, attemptId, "peer_prepare_timeout");
                     throw new IllegalStateException("等待对端准备超时（" + PEER_READY_TIMEOUT_SEC + " 秒）");
                 }
-                ws.setPeerNotifyListener(null);
                 ensureStartGeneration(expectedGeneration);
                 if (!"attempt_ready".equals(readyResult[0])) {
                     throw new IllegalStateException("对端准备失败：" + readyResult[1]);
@@ -979,6 +1002,19 @@ public final class WgvpnService extends VpnService {
                     throw new IllegalStateException("WireGuard 握手超时（" + WG_HANDSHAKE_TIMEOUT_SEC + " 秒）");
                 }
                 ensureStartGeneration(expectedGeneration);
+
+                // 被动端跨账号时，WG 已完成握手但 AllowedIPs 仍为空；等待明确允许后才
+                // 把主动端状态报告为 CONNECTED。审批等待不触碰数据包热路径。
+                if (approvalRequired.get()) {
+                    emit(TunnelState.WAITING_APPROVAL, "等待被动端允许业务数据", myVirtualIp, peerVirtualIp, exposedLan);
+                    if (!approvalDecisionLatch.await(65, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("被动端审批超时");
+                    }
+                    if (!"approval_granted".equals(approvalResult.get())) {
+                        throw new IllegalStateException("被动端未允许业务数据：" + approvalResult.get());
+                    }
+                }
+                ws.setPeerNotifyListener(null);
 
                 // 步骤 9: 上报成功
                 try {
@@ -1157,6 +1193,8 @@ public final class WgvpnService extends VpnService {
      */
     private static String classifyErrorCode(String msg) {
         if (msg == null) return "internal_error";
+        if (msg.contains("审批超时")) return "approval_timeout";
+        if (msg.contains("未允许业务数据")) return "approval_denied";
         // 步骤 8: WireGuard 握手（最靠后，优先判断）
         if (msg.contains("握手超时") || msg.contains("握手")) return "wireguard_handshake_failed";
         if (msg.contains("添加 peer")) return "wireguard_config_failed";

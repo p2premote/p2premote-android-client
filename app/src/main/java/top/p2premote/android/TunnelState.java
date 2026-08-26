@@ -18,6 +18,8 @@ final class TunnelState {
     static final String PUNCHING = "punching";
     /** WireGuard 握手中。 */
     static final String CONNECTING = "connecting";
+    /** WireGuard 已握手，但被动端尚未允许业务数据。 */
+    static final String WAITING_APPROVAL = "waiting_approval";
     /** 隧道已建立。 */
     static final String CONNECTED = "connected";
     /** 网络异常，等待恢复。 */
@@ -38,6 +40,7 @@ final class TunnelState {
                 || EXCHANGING.equals(state)
                 || PUNCHING.equals(state)
                 || CONNECTING.equals(state)
+                || WAITING_APPROVAL.equals(state)
                 || CONNECTED.equals(state)
                 || REQUESTING_VPN.equals(state)
                 || DEGRADED.equals(state);

@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * 职责：
  *   - 维持到服务端的 WS 长连接（协议 Ping/Pong 保活 + 指数退避重连）
  *   - {@link #sendNotifyWaitAck} 发送 p2p_notify 并同步等待服务端 p2p_notify_ack
- *   - {@link #setPeerNotifyListener} 接收被动端回传的 attempt_ready/attempt_failed
+ *   - {@link #setPeerNotifyListener} 接收被动端回传的 attempt_ready、审批事件和 attempt_failed
  *
  * 线程模型：WebSocket 回调在库线程；sendNotifyWaitAck 由 WgvpnService executor 调用，
  * 用 ConcurrentHashMap(message_id→CompletableFuture) 跨线程配对 ack。
@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * 协议对齐桌面端 ws.rs（commit 346a5e2）：
  *   - 建连后立即发首次协议 Ping，收到匹配 Pong 才进入 CONNECTED；之后每 20s Ping
  *   - p2p_notify 发送后服务端立即回 p2p_notify_ack（≤5s）
- *   - 被动端通过 p2p_notify 回传 attempt_ready/attempt_failed（业务 data 是嵌套 JSON 字符串）
+ *   - 被动端通过 p2p_notify 回传 attempt_ready、审批事件和 attempt_failed（业务 data 是嵌套 JSON 字符串）
  */
 public final class WsConnection {
 
@@ -79,7 +79,7 @@ public final class WsConnection {
     private final ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Boolean>> pendingAcks =
             new ConcurrentHashMap<>();
 
-    /** 被动端 p2p_notify 回调（attempt_ready/attempt_failed）。 */
+    /** 被动端 p2p_notify 回调（attempt_ready/approval_result/attempt_failed）。 */
     private volatile PeerNotifyListener peerNotifyListener;
 
     /** 连接状态变化回调（PresenceService 注册，用于更新通知栏 + 广播 UI）。 */
@@ -154,7 +154,7 @@ public final class WsConnection {
     }
 
     /**
-     * 设置被动端 p2p_notify 回调。WgvpnService 建链前注册，拿到 attempt_ready/failed。
+     * 设置被动端 p2p_notify 回调。WgvpnService 建链前注册，拿到就绪和审批结果。
      * 传 null 清除。
      */
     public void setPeerNotifyListener(PeerNotifyListener listener) {
@@ -395,7 +395,7 @@ public final class WsConnection {
             }
 
             if ("p2p_notify".equals(type)) {
-                // 被动端回传（attempt_ready / attempt_failed）。data 是嵌套 JSON 字符串。
+                // 被动端回传（attempt_ready / approval_* / attempt_failed）。data 是嵌套 JSON 字符串。
                 PeerNotifyListener listener = peerNotifyListener;
                 if (listener == null || payload == null) {
                     Log.d(TAG, "p2p_notify received but no listener, data=" + payload.optString("data", ""));
@@ -423,13 +423,25 @@ public final class WsConnection {
             switch (type) {
                 case "attempt_ready": {
                     int rdpPort = data.optInt("rdp_port", 0);
-                    listener.onNotify(type, attemptId, rdpPort, null);
+                    boolean approvalRequired = data.optBoolean("approval_required", false);
+                    listener.onNotify(type, attemptId, rdpPort, approvalRequired, 0L, null);
+                    break;
+                }
+                case "approval_required": {
+                    long expiresAt = data.optLong("expires_at", 0L);
+                    listener.onNotify(type, attemptId, 0, false, expiresAt, null);
+                    break;
+                }
+                case "approval_granted":
+                case "approval_denied":
+                case "approval_timeout": {
+                    listener.onNotify(type, attemptId, 0, false, 0L, null);
                     break;
                 }
                 case "attempt_failed": {
                     JSONObject err = data.optJSONObject("error");
                     String errMsg = err != null ? err.optString("message", "unknown") : "unknown";
-                    listener.onNotify(type, attemptId, 0, errMsg);
+                    listener.onNotify(type, attemptId, 0, false, 0L, errMsg);
                     break;
                 }
                 default:
@@ -505,11 +517,14 @@ public final class WsConnection {
     /** 被动端 p2p_notify 回调接口。 */
     public interface PeerNotifyListener {
         /**
-         * @param type      attempt_ready / attempt_failed
+         * @param type      attempt_ready / approval_* / attempt_failed
          * @param attemptId 本次尝试 ID
-         * @param rdpPort   attempt_ready 时的 RDP 端口（attempt_failed 为 0）
+         * @param rdpPort   attempt_ready 时的 RDP 端口（其他类型为 0）
+         * @param approvalRequired attempt_ready 携带的被动端审批要求（其他类型为 false）
+         * @param expiresAt approval_required 的过期时间戳（其他类型为 0）
          * @param error     attempt_failed 时的错误信息（attempt_ready 为 null）
          */
-        void onNotify(String type, String attemptId, int rdpPort, String error);
+        void onNotify(String type, String attemptId, int rdpPort, boolean approvalRequired,
+                      long expiresAt, String error);
     }
 }

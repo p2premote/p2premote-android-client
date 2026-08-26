@@ -77,7 +77,7 @@ try {
     $apkDirectory = Join-Path $projectRoot "app\build\outputs\apk\$configurationDirectory"
     $sourceApkName = switch ($Configuration) {
         'Debug' { 'app-debug.apk' }
-        'Release' { 'app-release-unsigned.apk' }
+        'Release' { 'app-release.apk' }
     }
     $sourceApk = Join-Path $apkDirectory $sourceApkName
     $versionedApk = Join-Path $apkDirectory "p2pRemote-$buildVersion.apk"
