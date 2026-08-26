@@ -301,7 +301,7 @@ public final class WgvpnService extends VpnService {
             recoveryTargetDeviceId = deviceId;
             recoveryTargetDeviceUuid = deviceUuid == null ? "" : deviceUuid;
             recoveryTargetDeviceName = deviceName == null ? "" : deviceName;
-            startForeground(NOTIFICATION_ID, notification("正在准备隧道", deviceName));
+            startForeground(NOTIFICATION_ID, notification("正在连接对方电脑", deviceName));
             startTunnel(deviceId, deviceUuid, deviceName);
             return START_STICKY;
         }
@@ -1006,7 +1006,7 @@ public final class WgvpnService extends VpnService {
                 // 被动端跨账号时，WG 已完成握手但 AllowedIPs 仍为空；等待明确允许后才
                 // 把主动端状态报告为 CONNECTED。审批等待不触碰数据包热路径。
                 if (approvalRequired.get()) {
-                    emit(TunnelState.WAITING_APPROVAL, "等待被动端允许业务数据", myVirtualIp, peerVirtualIp, exposedLan);
+                    emit(TunnelState.WAITING_APPROVAL, "连接请求已发送，请等待对方同意", myVirtualIp, peerVirtualIp, exposedLan);
                     if (!approvalDecisionLatch.await(65, TimeUnit.SECONDS)) {
                         throw new IllegalStateException("被动端审批超时");
                     }

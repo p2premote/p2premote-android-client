@@ -1416,7 +1416,7 @@ public final class MainActivity extends Activity {
             startService(intent);
         }
         currentTunnelState = TunnelState.PREPARING;
-        currentTunnelMessage = "已提交隧道任务";
+        currentTunnelMessage = "正在连接对方电脑，预计耗时 10~300 秒，请留意通知";
         currentPage = PAGE_CONNECT;
         showApp(PAGE_CONNECT);
     }
