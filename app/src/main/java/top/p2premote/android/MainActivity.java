@@ -718,7 +718,9 @@ public final class MainActivity extends Activity {
             String confirmPassword = forgotConfirmPassword.getText().toString();
 
             if (!VerificationCodeValidator.isValidEmailCode(captcha)) { toast("请输入6位数字邮箱验证码"); return; }
-            if (newPassword.length() < 6) { toast("新密码至少6位"); return; }
+            if (!PasswordValidator.isValid(newPassword)) {
+                toast("新密码至少6位，且必须同时包含英文字母和数字"); return;
+            }
             if (!confirmPassword.equals(newPassword)) { toast("两次输入的密码不一致"); return; }
 
             String serverUrl = (serverUrlRef[0] != null && !serverUrlRef[0].getText().toString().trim().isEmpty())
