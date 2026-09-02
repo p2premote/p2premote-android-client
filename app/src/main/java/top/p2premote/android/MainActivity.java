@@ -1002,6 +1002,16 @@ public final class MainActivity extends Activity {
                 TextView vip = monoAddress(peerVirtualIp);
                 vip.setOnClickListener(v -> copyText("对端虚拟 IP", peerVirtualIp));
                 wrap.addView(vip);
+                if (target != null) {
+                    String remoteAddress = target.remoteAccessAddress(peerVirtualIp);
+                    if (!remoteAddress.isEmpty()) {
+                        String label = "vnc".equalsIgnoreCase(target.remoteAccessProtocol)
+                                ? "屏幕共享 / VNC 地址" : "远程桌面地址";
+                        TextView remote = monoAddress(label + "：" + remoteAddress);
+                        remote.setOnClickListener(v -> copyText(label, remoteAddress));
+                        wrap.addView(remote);
+                    }
+                }
             }
             if (!exposedLan.isEmpty()) {
                 wrap.addView(helpText("可访问网段：" + exposedLan));

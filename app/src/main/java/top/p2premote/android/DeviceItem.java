@@ -14,6 +14,9 @@ final class DeviceItem {
     final String publicIpLocation;
     final String systemVersion;
     final String clientVersion;
+    final String remoteAccessProtocol;
+    final boolean remoteAccessEnabled;
+    final int remoteAccessPort;
 
     DeviceItem(
             long id,
@@ -26,7 +29,7 @@ final class DeviceItem {
             String lanIp,
             int servicePort
     ) {
-        this(id, name, alias, type, uuid, status, publicIp, lanIp, servicePort, "", "", "");
+        this(id, name, alias, type, uuid, status, publicIp, lanIp, servicePort, "", "", "", "", false, 0);
     }
 
     DeviceItem(
@@ -43,6 +46,18 @@ final class DeviceItem {
             String systemVersion,
             String clientVersion
     ) {
+        this(id, name, alias, type, uuid, status, publicIp, lanIp, servicePort,
+                publicIpLocation, systemVersion, clientVersion,
+                type != null && type.toLowerCase().contains("windows") ? "rdp" : "",
+                type != null && type.toLowerCase().contains("windows"), servicePort);
+    }
+
+    DeviceItem(
+            long id, String name, String alias, String type, String uuid, String status,
+            String publicIp, String lanIp, int servicePort, String publicIpLocation,
+            String systemVersion, String clientVersion, String remoteAccessProtocol,
+            boolean remoteAccessEnabled, int remoteAccessPort
+    ) {
         this.id = id;
         this.name = name == null ? "" : name;
         this.alias = alias == null ? "" : alias;
@@ -55,6 +70,9 @@ final class DeviceItem {
         this.publicIpLocation = publicIpLocation == null ? "" : publicIpLocation;
         this.systemVersion = systemVersion == null ? "" : systemVersion;
         this.clientVersion = clientVersion == null ? "" : clientVersion;
+        this.remoteAccessProtocol = remoteAccessProtocol == null ? "" : remoteAccessProtocol;
+        this.remoteAccessEnabled = remoteAccessEnabled;
+        this.remoteAccessPort = remoteAccessPort > 0 ? remoteAccessPort : servicePort;
     }
 
     String displayName() {
@@ -63,5 +81,12 @@ final class DeviceItem {
 
     boolean canAcceptP2P() {
         return !"android".equalsIgnoreCase(type.trim());
+    }
+
+    String remoteAccessAddress(String virtualIp) {
+        if (!remoteAccessEnabled || remoteAccessProtocol.isEmpty() || virtualIp == null || virtualIp.isEmpty()) {
+            return "";
+        }
+        return virtualIp + ":" + remoteAccessPort;
     }
 }

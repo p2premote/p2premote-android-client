@@ -115,6 +115,7 @@ final class ApiClient {
         req.put("public_ip", "");
         req.put("service_port", 0);
         req.put("rdp_enabled", false);
+        req.put("remote_access", JSONObject.NULL);
 
         JSONObject data = authedRequest(session, "POST", "/api/v1/devices", req);
         DeviceItem device = parseDevice(data);
@@ -155,14 +156,24 @@ final class ApiClient {
         JSONObject data = authedRequest(session, "POST", "/api/v1/p2p/open", req);
         JSONObject targetObj = data.optJSONObject("target");
         int targetRdpPort = 3389;
+        String targetRemoteProtocol = "rdp";
+        JSONObject remoteAccess = data.optJSONObject("target_remote_access");
         if (targetObj != null) {
             targetRdpPort = targetObj.optInt("service_port", 3389);
+            if (remoteAccess == null) {
+                remoteAccess = targetObj.optJSONObject("remote_access");
+            }
+        }
+        if (remoteAccess != null) {
+            targetRemoteProtocol = remoteAccess.optString("protocol", "rdp");
+            targetRdpPort = remoteAccess.optInt("port", targetRdpPort);
         }
         return new OpenResult(
                 data.optString("connection_id"),
                 data.optLong("log_id"),
                 data.optString("access_grant"),
                 targetRdpPort,
+                targetRemoteProtocol,
                 data.optLong("source_user_id"),
                 data.optString("source_username"),
                 data.optString("source_email")
@@ -331,6 +342,11 @@ final class ApiClient {
     }
 
     private DeviceItem parseDevice(JSONObject item) {
+        JSONObject remoteAccess = item.optJSONObject("remote_access");
+        String remoteProtocol = remoteAccess == null ? "" : remoteAccess.optString("protocol");
+        boolean remoteEnabled = remoteAccess != null && remoteAccess.optBoolean("enabled", false);
+        int remotePort = remoteAccess == null ? item.optInt("service_port", 3389)
+                : remoteAccess.optInt("port", item.optInt("service_port", 3389));
         return new DeviceItem(
                 item.optLong("device_id"),
                 item.optString("device_name"),
@@ -343,7 +359,10 @@ final class ApiClient {
                 item.optInt("service_port", 3389),
                 item.optString("public_ip_location"),
                 item.optString("system_version"),
-                item.optString("client_version")
+                item.optString("client_version"),
+                remoteProtocol,
+                remoteEnabled,
+                remotePort
         );
     }
 
@@ -520,6 +539,7 @@ final class ApiClient {
         final long logId;
         final String accessGrant;
         final int targetRdpPort;
+        final String targetRemoteProtocol;
         // 主动端身份：服务端按 Bearer token 解析后回填，需在 attempt_start 中回传给被动端，
         // 否则被动端弹窗显示「未知用户」（对齐桌面 P2PAttemptMessage::AttemptStart）。
         final long sourceUserId;
@@ -527,11 +547,13 @@ final class ApiClient {
         final String sourceEmail;
 
         OpenResult(String connectionId, long logId, String accessGrant, int targetRdpPort,
+                   String targetRemoteProtocol,
                    long sourceUserId, String sourceUsername, String sourceEmail) {
             this.connectionId = connectionId == null ? "" : connectionId;
             this.logId = logId;
             this.accessGrant = accessGrant == null ? "" : accessGrant;
             this.targetRdpPort = targetRdpPort;
+            this.targetRemoteProtocol = targetRemoteProtocol == null ? "rdp" : targetRemoteProtocol;
             this.sourceUserId = sourceUserId;
             this.sourceUsername = sourceUsername == null ? "" : sourceUsername;
             this.sourceEmail = sourceEmail == null ? "" : sourceEmail;
