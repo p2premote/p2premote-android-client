@@ -33,26 +33,6 @@ final class DeviceItem {
     }
 
     DeviceItem(
-            long id,
-            String name,
-            String alias,
-            String type,
-            String uuid,
-            String status,
-            String publicIp,
-            String lanIp,
-            int servicePort,
-            String publicIpLocation,
-            String systemVersion,
-            String clientVersion
-    ) {
-        this(id, name, alias, type, uuid, status, publicIp, lanIp, servicePort,
-                publicIpLocation, systemVersion, clientVersion,
-                type != null && type.toLowerCase().contains("windows") ? "rdp" : "",
-                type != null && type.toLowerCase().contains("windows"), servicePort);
-    }
-
-    DeviceItem(
             long id, String name, String alias, String type, String uuid, String status,
             String publicIp, String lanIp, int servicePort, String publicIpLocation,
             String systemVersion, String clientVersion, String remoteAccessProtocol,
@@ -81,6 +61,13 @@ final class DeviceItem {
 
     boolean canAcceptP2P() {
         return !"android".equalsIgnoreCase(type.trim());
+    }
+
+    /** 返回带服务端下发 remote_access 信息的副本（字段为 final，用于 p2p/open 后修正）。 */
+    DeviceItem withRemoteAccess(String protocol, boolean enabled, int port) {
+        return new DeviceItem(id, name, alias, type, uuid, status, publicIp, lanIp,
+                servicePort, publicIpLocation, systemVersion, clientVersion,
+                protocol, enabled, port);
     }
 
     String remoteAccessAddress(String virtualIp) {

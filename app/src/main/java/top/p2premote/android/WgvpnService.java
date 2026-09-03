@@ -705,7 +705,7 @@ public final class WgvpnService extends VpnService {
             WsConnection attemptWs = null;
             String activeAttemptId = null;
             boolean attemptStarted = false;
-            DeviceItem targetItem = new DeviceItem(targetDeviceId, targetName, "", "windows",
+            DeviceItem targetItem = new DeviceItem(targetDeviceId, targetName, "", "",
                     targetDeviceUuid, "online", "", "", 3389);
             try {
                 Session session = sessionStore.require();
@@ -739,6 +739,10 @@ public final class WgvpnService extends VpnService {
                     throw new IllegalStateException("p2p/open 未返回有效的 connection_id 或 access_grant");
                 }
                 Log.i(TAG, "p2p/open ok: connection_id=" + opened.connectionId + " log_id=" + opened.logId);
+                // 用服务端返回的 target_remote_access 修正 targetItem（协议/端口跟随被控端，
+                // macOS 为 vnc/5900，Windows/Linux 为 rdp/3389），后续上报与状态使用。
+                targetItem = targetItem.withRemoteAccess(
+                        opened.targetRemoteProtocol, true, opened.targetRdpPort);
 
                 // 步骤 3: 客户端生成 punch_token + attempt_id（新协议下 token 由客户端生成）
                 String punchToken = ApiClient.buildPunchToken(session.deviceId, targetDeviceId);
