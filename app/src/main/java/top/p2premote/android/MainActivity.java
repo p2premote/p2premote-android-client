@@ -1173,6 +1173,11 @@ public final class MainActivity extends Activity {
         if (!device.publicIpLocation.isEmpty()) {
             card.addView(helpText("IP 位置：" + device.publicIpLocation));
         }
+		if (!isOnline(device) && device.wakeAvailable) {
+			Button wake=primaryButton("唤醒设备");
+				wake.setOnClickListener(v -> runAsync("正在发送唤醒包...",()->apiClient.wakeDevice(device.id), status->{ if("sent".equals(status))toast("唤醒包已发送");else toast(wolError(status)); }));
+			card.addView(wake);
+		}
 
         card.setClickable(canAcceptP2P);
         if (canAcceptP2P) {
@@ -1187,6 +1192,8 @@ public final class MainActivity extends Activity {
         }
         return card;
     }
+
+	private String wolError(String status) { if("no_relay".equals(status))return "目标局域网内没有可用的在线节点"; if("relay_timeout".equals(status))return "唤醒节点响应超时"; if("target_online".equals(status))return "设备已经在线"; if("unsupported".equals(status))return "设备尚未上报唤醒能力"; return "唤醒包发送失败"; }
 
     // ============ 我的页 ============
 

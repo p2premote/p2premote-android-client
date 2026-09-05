@@ -17,6 +17,7 @@ final class DeviceItem {
     final String remoteAccessProtocol;
     final boolean remoteAccessEnabled;
     final int remoteAccessPort;
+	final boolean wakeAvailable;
 
     DeviceItem(
             long id,
@@ -29,14 +30,14 @@ final class DeviceItem {
             String lanIp,
             int servicePort
     ) {
-        this(id, name, alias, type, uuid, status, publicIp, lanIp, servicePort, "", "", "", "", false, 0);
+        this(id, name, alias, type, uuid, status, publicIp, lanIp, servicePort, "", "", "", "", false, 0, false);
     }
 
     DeviceItem(
             long id, String name, String alias, String type, String uuid, String status,
             String publicIp, String lanIp, int servicePort, String publicIpLocation,
             String systemVersion, String clientVersion, String remoteAccessProtocol,
-            boolean remoteAccessEnabled, int remoteAccessPort
+            boolean remoteAccessEnabled, int remoteAccessPort, boolean wakeAvailable
     ) {
         this.id = id;
         this.name = name == null ? "" : name;
@@ -53,6 +54,7 @@ final class DeviceItem {
         this.remoteAccessProtocol = remoteAccessProtocol == null ? "" : remoteAccessProtocol;
         this.remoteAccessEnabled = remoteAccessEnabled;
         this.remoteAccessPort = remoteAccessPort > 0 ? remoteAccessPort : servicePort;
+		this.wakeAvailable = wakeAvailable;
     }
 
     String displayName() {
@@ -67,7 +69,7 @@ final class DeviceItem {
     DeviceItem withRemoteAccess(String protocol, boolean enabled, int port) {
         return new DeviceItem(id, name, alias, type, uuid, status, publicIp, lanIp,
                 servicePort, publicIpLocation, systemVersion, clientVersion,
-                protocol, enabled, port);
+                protocol, enabled, port, wakeAvailable);
     }
 
     String remoteAccessAddress(String virtualIp) {
