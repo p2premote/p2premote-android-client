@@ -1,6 +1,7 @@
 param(
     [string]$AndroidSdk = "",
-    [string]$NdkVersion = "27.0.12077973"
+    [string]$NdkVersion = "27.0.12077973",
+    [switch]$NoSccache
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,6 +20,15 @@ $toolBin = Join-Path $ndkRoot "toolchains\llvm\prebuilt\windows-x86_64\bin"
 
 $null = Get-Command cargo -ErrorAction Stop
 $null = Get-Command rustup -ErrorAction Stop
+if ($NoSccache) {
+    $env:RUSTC_WRAPPER = ""
+    Write-Host "sccache disabled; Rust will compile locally"
+}
+else {
+    $null = Get-Command sccache -ErrorAction Stop
+    $env:RUSTC_WRAPPER = "sccache"
+    Write-Host "sccache enabled (use -NoSccache to disable)"
+}
 if (!(Test-Path $ndkRoot)) {
     throw "Android NDK not found: $ndkRoot"
 }
@@ -56,5 +66,6 @@ try {
 } finally {
     Pop-Location
 }
+if (-not $NoSccache) { & sccache --show-stats }
 
 Write-Host "built Rust riperf3 JNI libraries under $jniRoot"
