@@ -117,6 +117,7 @@ final class ApiClient {
         req.put("rdp_enabled", false);
         req.put("remote_access", JSONObject.NULL);
 		JSONObject wol = WolSupport.capability();
+		req.put("capabilities", new JSONArray());
 		if (wol != null) req.put("wol_capability", wol);
 
         JSONObject data = authedRequest(session, "POST", "/api/v1/devices", req);
