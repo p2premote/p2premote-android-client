@@ -11,7 +11,7 @@ app/src/main/jniLibs/**/*.so
 app/libs/p2plinkmobile*.aar
 app/libs/p2plinkmobile*.jar
 
-# wgvpn AAR：体积大（12MB）且随 gonc 改动频繁重生成，不入库。
-# 由相邻 p2premote-punch/build-android-aar.sh 按需构建后拷贝到此处。
+# WG 数据面 AAR：体积大且随 wireguard-go 改动频繁重生成，不入库。
+# 由相邻 p2premote-wg-ffi/build-android-aar.sh 按需构建后拷贝到此处。
 # 首次构建前 libs/ 不存在属正常，assembleDebug 会因找不到 AAR 报错，请先跑构建脚本。
-app/libs/p2premote-wgvpn.aar
+app/libs/libwgmobile.aar

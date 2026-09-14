@@ -23,7 +23,7 @@ if (-not $AndroidSdk) {
         throw "Android SDK path is required: pass -AndroidSdk or set ANDROID_HOME"
     }
 }
-$crateDir = Join-Path $repoRoot "riperf3-native"
+$crateDir = Join-Path $repoRoot "punch-native"
 $jniRoot = Join-Path $repoRoot "app\src\main\jniLibs"
 $ndkRoot = Join-Path $AndroidSdk "ndk\$NdkVersion"
 $toolBin = Join-Path $ndkRoot "toolchains\llvm\prebuilt\windows-x86_64\bin"
@@ -43,13 +43,14 @@ if (!(Test-Path $ndkRoot)) {
     throw "Android NDK not found: $ndkRoot"
 }
 
+$env:ANDROID_NDK_HOME = $ndkRoot
+$env:ANDROID_NDK_ROOT = $ndkRoot
+
 $targets = @(
     @{ Rust = "aarch64-linux-android"; Abi = "arm64-v8a"; Clang = "aarch64-linux-android29-clang.cmd"; Cxx = "aarch64-linux-android29-clang++.cmd" },
     @{ Rust = "x86_64-linux-android"; Abi = "x86_64"; Clang = "x86_64-linux-android29-clang.cmd"; Cxx = "x86_64-linux-android29-clang++.cmd" }
 )
 
-$env:ANDROID_NDK_HOME = $ndkRoot
-$env:ANDROID_NDK_ROOT = $ndkRoot
 Push-Location $crateDir
 try {
     foreach ($target in $targets) {
@@ -62,8 +63,8 @@ try {
         Set-Item "Env:CARGO_TARGET_$($targetKey.ToUpper())_LINKER" (Join-Path $toolBin $target.Clang)
         & cargo build --release --target $target.Rust
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed: $($target.Rust)" }
-        $destination = Join-Path $jniRoot "$($target.Abi)\libp2premote_riperf3_jni.so"
-        $source = Join-Path $crateDir "target\$($target.Rust)\release\libp2premote_riperf3_jni.so"
+        $destination = Join-Path $jniRoot "$($target.Abi)\libp2premote_punch_jni.so"
+        $source = Join-Path $crateDir "target\$($target.Rust)\release\libp2premote_punch_jni.so"
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw "JNI library was not generated: $source"
         }
@@ -78,4 +79,4 @@ try {
 }
 if (-not $NoSccache) { & sccache --show-stats }
 
-Write-Host "built Rust riperf3 JNI libraries under $jniRoot"
+Write-Host "built Rust punch JNI libraries under $jniRoot"

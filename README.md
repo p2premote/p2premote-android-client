@@ -7,9 +7,12 @@ Android 是仅发起端：可以连接桌面设备，但不能接收其他设备
 
 ## 架构
 
-- **Native 层**（`p2premote-wgvpn.aar`，gomobile 绑定）：
-  - `wgvpnmobile`：gonc wgvpn 绑定（Exchange / StartUdpTunnel / StopUdpTunnel / SetProtectCallback）
-  - `libwgmobile`：wireguard-go userspace 绑定（WgStart / WgAddPeer / WgRemovePeer / WgStop）
+- **打洞层**（`punch-native/`，Rust JNI 库 `libp2premote_punch_jni.so`）：
+  - Rust 版 gonc（`p2premote-punch-rs-gonc`）的 JNI 绑定，由 Gradle `preBuild` 自动构建
+  - `PunchNative`：Exchange / StartUdpTunnel / StopUdpTunnel / protect 回调
+- **WG 数据面**（`libwgmobile.aar`，gomobile 绑定，不入库）：
+  - `libwgmobile`：wireguard-go userspace 绑定（WgStart / WgAddPeer / WgRemovePeer / WgStop），
+    源码位于 `p2premote-wg-ffi/mobile/libwgmobile`
 - **应用层**：
   - `WgvpnService`：VpnService + ForegroundService，完整 9 步 active 建链 / 断链清理 / protect 回调 / 状态广播
   - `MainActivity`：VPN 授权流程 + 虚拟 IP 展示 + 隧道状态机
@@ -18,20 +21,23 @@ Android 是仅发起端：可以连接桌面设备，但不能接收其他设备
 
 ## 构建
 
-### 1. 构建 wgvpn AAR（首次必做）
+### 1. 构建 libwgmobile AAR（首次必做）
 
-AAR 不入库（体积大、随 gonc 改动频繁重生成），需先用 gomobile 构建：
+AAR 不入库（体积大、随 wireguard-go 改动频繁重生成），需先用 gomobile 构建：
 
 ```bash
-cd ../p2premote-punch
+cd ../p2premote-wg-ffi
 ./build-android-aar.sh
-# 产物：p2premote-punch/p2premote-wgvpn.aar
-cp p2premote-wgvpn.aar ../p2premote-android-client/app/libs/p2premote-wgvpn.aar
+# 产物：p2premote-wg-ffi/libwgmobile.aar
+cp libwgmobile.aar ../p2premote-android-client/app/libs/libwgmobile.aar
 ```
 
 前置依赖：Go 1.25+、gomobile、Android NDK、`ANDROID_HOME` 已配置。详见脚本头部说明。
 
 ### 2. 构建 APK
+
+打洞层 Rust JNI 库由 `preBuild` 任务自动交叉编译（`scripts/build-punch-native.ps1`，
+需要 Rust + Android NDK）；WG AAR 按上一步手动放置后：
 
 ```bash
 cd p2premote-android-client

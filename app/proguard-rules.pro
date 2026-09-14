@@ -5,18 +5,18 @@
 # 以下 keep 规则保护所有 gomobile 绑定类与 go runtime。
 
 # ============ gomobile 生成包 ============
-# wgvpnmobile.* —— gonc wgvpn 绑定（Exchange / StartUdpTunnel / SetProtectCallback 等）
--keep class wgvpnmobile.** { *; }
 # libwgmobile.* —— wireguard-go userspace 绑定（WgStart / WgAddPeer 等）
 -keep class libwgmobile.** { *; }
 # go runtime / go.Seq 序列化层
 -keep class go.** { *; }
 
 # ============ 回调接口 ============
-# gomobile 导出的 Java 接口（如 ProtectCallback）由 native 侧通过反射或
-# 注册表调用，不可被重命名。
--keepclassmembers class wgvpnmobile.ProtectCallback { *; }
+# gomobile 导出的 Java 接口由 native 侧通过反射或注册表调用，不可被重命名。
 -keepclassmembers class libwgmobile.** { *; }
+# Rust JNI 使用静态符号 Java_top_p2premote_android_PunchNative_* 绑定，
+# nativeSetProtectCallback 回调由 native 侧反射调用，类/方法名不可混淆。
+-keep class top.p2premote.android.PunchNative { *; }
+-keep class top.p2premote.android.PunchNative$* { *; }
 
 # ============ 应用自身 ============
 # VpnService 子类、Broadcast、Activity 等被系统/反射引用，保留类名。

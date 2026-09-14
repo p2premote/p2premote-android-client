@@ -38,10 +38,8 @@ import libwgmobile.Keypair;
 import libwgmobile.Libwgmobile;
 import libwgmobile.WgResult;
 import libwgmobile.WgTransferStats;
-import wgvpnmobile.ExchangeResult;
-import wgvpnmobile.ProtectCallback;
-import wgvpnmobile.TunnelResult;
-import wgvpnmobile.Wgvpnmobile;
+import top.p2premote.android.PunchNative.ExchangeResult;
+import top.p2premote.android.PunchNative.TunnelResult;
 
 /**
  * wgvpn 隧道服务（Foreground + VpnService）。
@@ -247,14 +245,10 @@ public final class WgvpnService extends VpnService {
         apiClient = new ApiClient(sessionStore);
         ensureChannel();
         // 注册 protect 回调：gonc 创建的 socket 必须 protect，否则 VPN 回环。
-        Wgvpnmobile.setProtectCallback(new ProtectCallback() {
+        PunchNative.nativeSetProtectCallback(new PunchNative.ProtectCallback() {
             @Override
-            public boolean protect(long fd) {
-                // gomobile 把 Go int 映射为 Java long；fd 必为非负小整数，截断前校验范围。
-                if (fd < 0 || fd > Integer.MAX_VALUE) {
-                    return false;
-                }
-                return protectAndBindSocket((int) fd);
+            public boolean protect(int fd) {
+                return protectAndBindSocket(fd);
             }
         });
         registerUnderlyingNetworkCallback();
@@ -352,7 +346,7 @@ public final class WgvpnService extends VpnService {
         try {
             executor.execute(() -> {
                 cleanupNative();
-                Wgvpnmobile.setProtectCallback(null);
+                PunchNative.nativeSetProtectCallback(null);
             });
         } catch (RejectedExecutionException e) {
             Log.w(TAG, "native cleanup executor already closed", e);
@@ -860,7 +854,7 @@ public final class WgvpnService extends VpnService {
                 sendPayload.put("my_ip", expectedPassiveIp);
                 sendPayload.put("exposed_lan_cidrs", new JSONArray());
 
-                ExchangeResult exResult = Wgvpnmobile.exchange(
+                ExchangeResult exResult = PunchNative.exchange(
                         punchToken, sendPayload.toString(), "active", 0, EXCHANGE_TIMEOUT_SEC);
                 ensureStartGeneration(expectedGeneration);
                 if (!exResult.getOK()) {
@@ -906,7 +900,7 @@ public final class WgvpnService extends VpnService {
                 tunnelReq.put("remote_target_port", WG_LISTEN_PORT);
                 tunnelReq.put("allow_relay", false);
 
-                TunnelResult tunnelResult = Wgvpnmobile.startUdpTunnel(tunnelReq.toString());
+                TunnelResult tunnelResult = PunchNative.startUdpTunnel(tunnelReq.toString());
                 if (!tunnelResult.getOK()) {
                     throw new IllegalStateException("P2P 打洞失败：" + tunnelResult.getError());
                 }
@@ -1800,7 +1794,7 @@ public final class WgvpnService extends VpnService {
         // 停止 gonc UDP tunnel
         if (!goncHandleId.isEmpty()) {
             try {
-                Wgvpnmobile.stopUdpTunnel(goncHandleId);
+                PunchNative.stopUdpTunnel(goncHandleId);
                 goncHandleId = "";
             } catch (Exception e) {
                 Log.w(TAG, "stopUdpTunnel error: " + e.getMessage());

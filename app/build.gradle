@@ -55,8 +55,16 @@ tasks.register("buildRiperf3Native", Exec) {
             "scripts/build-riperf3-native.ps1"
 }
 
+// P2P 打洞层为 Rust 版 gonc（p2premote-punch-rs-gonc 的 JNI 绑定）。
+tasks.register("buildPunchNative", Exec) {
+    workingDir rootProject.projectDir
+    commandLine "powershell", "-ExecutionPolicy", "Bypass", "-File",
+            "scripts/build-punch-native.ps1"
+}
+
 tasks.named("preBuild").configure {
     dependsOn(tasks.named("buildRiperf3Native"))
+    dependsOn(tasks.named("buildPunchNative"))
 }
 
 dependencies {
