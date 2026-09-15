@@ -1406,6 +1406,25 @@ public final class MainActivity extends Activity {
             toast("请先断开当前隧道");
             return;
         }
+        String targetPlatform = (target.type + " " + target.systemVersion)
+                .toLowerCase(java.util.Locale.ROOT);
+        boolean windowsTarget = targetPlatform.contains("windows")
+                || targetPlatform.contains("win10") || targetPlatform.contains("win 10")
+                || targetPlatform.contains("win11") || targetPlatform.contains("win 11")
+                || targetPlatform.contains("win7") || targetPlatform.contains("win 7");
+        if (windowsTarget && !target.remoteAccessEnabled) {
+            String version = target.systemVersion.toLowerCase(java.util.Locale.ROOT);
+            boolean homeEdition = version.equals("home") || version.startsWith("home ")
+                    || version.contains(" home ") || version.endsWith(" home")
+                    || version.contains("家庭版");
+            new android.app.AlertDialog.Builder(this)
+                    .setMessage(homeEdition
+                            ? "对端设备是Windows家庭版,需升级到高级版本或搜索rdpwrap补丁以开启远程桌面服务"
+                            : "对端设备未开启远程桌面服务,请在其设置中开启")
+                    .setPositiveButton("知道了", null)
+                    .show();
+            return;
+        }
         pendingTarget = target;
         currentTunnelState = TunnelState.REQUESTING_VPN;
         currentTunnelMessage = "正在请求 VPN 权限";
