@@ -1159,7 +1159,7 @@ public final class MainActivity extends Activity {
         row.addView(statusChip(isOnline(device) ? "在线" : "离线",
                 isOnline(device) ? 0xFF16A34A : 0xFF64748B));
         card.addView(row);
-        card.addView(helpText(device.type + " · ID " + device.id));
+        card.addView(helpText(device.type));
         if (!device.systemVersion.isEmpty()) {
             card.addView(helpText("系统版本：" + device.systemVersion));
         }
