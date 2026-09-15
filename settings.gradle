@@ -16,4 +16,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "p2pRemoteAndroid"
 include ":app"
-include ":admin-app"
