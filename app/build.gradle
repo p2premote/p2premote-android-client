@@ -68,6 +68,7 @@ tasks.named("preBuild").configure {
 }
 
 dependencies {
+    implementation "androidx.core:core:1.13.1"
     implementation fileTree(dir: "libs", include: ["*.aar"])
     // 支持主动发送协议 Ping 并接收 Pong 回调；用于与桌面端一致的 WS 就绪状态机。
     implementation "org.java-websocket:Java-WebSocket:1.6.0"

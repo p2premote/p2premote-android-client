@@ -34,6 +34,7 @@ import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -138,7 +139,23 @@ public final class MainActivity extends Activity {
                             .setPositiveButton("确定", null)
                             .show();
                 } else {
-                    toast("测速失败：" + safe(intent.getStringExtra(WgvpnService.EXTRA_MESSAGE)));
+                    // 失败也弹窗（与成功一致的信息层级），并区分「短暂超时可重试」
+                    // 与「版本不兼容需升级对端」两类常见情况。
+                    String error = safe(intent.getStringExtra(WgvpnService.EXTRA_MESSAGE));
+                    String hint;
+                    if (error.contains("协议版本")) {
+                        hint = "对端客户端版本过低，无法测速；请升级对端后重试。";
+                    } else if (error.contains("超时") || error.contains("尚未就绪") || error.contains("连接失败")) {
+                        hint = "这通常是短暂超时，隧道可能还在稳定中，请稍后重试。";
+                    } else {
+                        hint = "请稍后重试；若持续失败请导出诊断日志排查。";
+                    }
+                    new android.app.AlertDialog.Builder(MainActivity.this)
+                            .setTitle("隧道测速失败")
+                            .setMessage(error + "\n\n" + hint)
+                            .setPositiveButton("重试", (d, w) -> startSpeedTest())
+                            .setNegativeButton("关闭", null)
+                            .show();
                 }
                 return;
             }
@@ -1274,9 +1291,73 @@ public final class MainActivity extends Activity {
         contentRoot.addView(versionCard);
         checkUpdate.setOnClickListener(view -> checkVersionManually());
 
+        // 诊断日志卡片：真机排障时无需 adb 即可导出连接过程关键事件。
+        LinearLayout diagCard = card();
+        diagCard.addView(body("诊断日志"));
+        java.io.File diagFile = DiagLog.file(this);
+        diagCard.addView(helpText(diagFile == null
+                ? "记录连接建立过程的关键事件（无内容）"
+                : "记录连接建立过程的关键事件，当前 " + formatDiagSize(diagFile.length())));
+        Button shareDiag = outlineButton("分享诊断日志", 0xFF2563EB);
+        LinearLayout.LayoutParams shareDiagParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        shareDiagParams.topMargin = dp(8);
+        diagCard.addView(shareDiag, shareDiagParams);
+        Button clearDiag = outlineButton("清空诊断日志", 0xFF6B7280);
+        LinearLayout.LayoutParams clearDiagParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        clearDiagParams.topMargin = dp(4);
+        diagCard.addView(clearDiag, clearDiagParams);
+        contentRoot.addView(diagCard);
+        shareDiag.setOnClickListener(v -> shareDiagLog());
+        clearDiag.setOnClickListener(v -> confirmClearDiagLog());
+
         Button logout = outlineButton("退出登录", 0xFFB91C1C);
         logout.setOnClickListener(v -> confirmLogout());
         contentRoot.addView(logout);
+    }
+
+    private static String formatDiagSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return String.format(Locale.US, "%.1f KB", bytes / 1024.0);
+        return String.format(Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0);
+    }
+
+    /** 分享诊断日志文件（FileProvider 授权读取，接收方可存档/转发）。 */
+    private void shareDiagLog() {
+        java.io.File diagFile = DiagLog.file(this);
+        if (diagFile == null) {
+            toast("暂无诊断日志");
+            return;
+        }
+        try {
+            Uri uri = androidx.core.content.FileProvider.getUriForFile(
+                    this, getPackageName() + ".diagfileprovider", diagFile);
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType("text/plain");
+            send.putExtra(Intent.EXTRA_STREAM, uri);
+            send.putExtra(Intent.EXTRA_SUBJECT, "p2pRemote 诊断日志");
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(send, "分享诊断日志"));
+        } catch (Exception e) {
+            android.util.Log.w("p2pRemote", "share diag log failed", e);
+            toast("分享失败: " + e.getMessage());
+        }
+    }
+
+    private void confirmClearDiagLog() {
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("清空诊断日志")
+                .setMessage("确定删除全部诊断日志吗？")
+                .setPositiveButton("清空", (d, w) -> {
+                    DiagLog.clear(this);
+                    toast("诊断日志已清空");
+                    renderCurrentPage();
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void checkVersionManually() {

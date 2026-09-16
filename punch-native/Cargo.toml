@@ -15,5 +15,5 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
 [dependencies.p2premote-punch]
-path = "../../p2premote-punch-rs-gonc"
+path = "../../p2premote-punch-rs"
 default-features = false

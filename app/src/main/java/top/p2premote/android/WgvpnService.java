@@ -116,7 +116,15 @@ public final class WgvpnService extends VpnService {
      *  主动端（本机）作为 client 连接被动端「peer_virtual_ip:48082」建立健康长连接，
      *  对齐桌面 p2p.rs 的 active_health_session：connect→Hello→HelloAck→Ping/Pong。 */
     private static final int HEALTH_PORT = 48082;
+    /**
+     * 隧道控制协议版本。报 v3（本端消息集的基线版本）：v3→v5 仅 Hello
+     * 的 session_secret 增删，本端从未携带该字段，消息结构与 v5 互通。
+     * 兼容策略：不设版本上限，只要求对端不低于最低兼容版本 —— 版本号
+     * 升级但消息实际兼容时不应被拒；将来出现破坏性变更时提高下限即可。
+     */
     private static final int TUNNEL_CONTROL_PROTOCOL_VERSION = 3;
+    /** 最低可互连的协议版本，低于此值说明对端过旧，需升级后重试。 */
+    private static final int TUNNEL_CONTROL_PROTOCOL_MIN_COMPAT = 3;
     /** 健康连接 / 心跳各项超时（秒），对齐桌面 p2p.rs active_health_session。 */
     private static final int HEALTH_CONNECT_TIMEOUT_SEC = 10;
     private static final int HEALTH_HANDSHAKE_TIMEOUT_SEC = 5;
@@ -135,7 +143,12 @@ public final class WgvpnService extends VpnService {
     /** 对齐桌面端：上传、下载各自独立测速 6 秒。 */
     private static final int SPEED_TEST_DURATION_SEC = 6;
     private static final int SPEED_TEST_PING_COUNT = 5;
-    private static final int SPEED_TEST_TOTAL_TIMEOUT_SEC = 60;
+    /**
+     * 测速总超时。正常一轮 ≈ 5 次 RTT + 两个方向各 SPEED_TEST_DURATION_SEC(6s)
+     * + 控制消息往返 ≈ 20s（对齐桌面 speed_test.rs：单方向上限 6+15s）。
+     * 取 30s = 正常时长 + 50% 余量；更长的等待本身就是异常，应尽快反馈。
+     */
+    private static final int SPEED_TEST_TOTAL_TIMEOUT_SEC = 30;
     /** 服务端业务错误码：设备不在线（response.CodeDeviceOffline）。 */
     private static final int CODE_DEVICE_OFFLINE = 1054;
 
@@ -166,6 +179,8 @@ public final class WgvpnService extends VpnService {
     // 隧道健康检查 client：主动端连接被动端 server，维持心跳让被动端 watchdog 不误判。
     // Android VpnService 入站 TCP 到不了本地 ServerSocket（已知限制），故主动端只能做 client。
     private volatile boolean healthClientRunning = false;
+    /** 最近一次 health 握手失败的人读原因（协议版本不兼容等），供测速入口透传。 */
+    private volatile String healthFailReason = "";
     private volatile java.net.Socket healthSocket = null;
     private Thread healthClientThread = null;
     private volatile long lastHealthSuccessElapsedMs = 0;
@@ -252,6 +267,7 @@ public final class WgvpnService extends VpnService {
             }
         });
         registerUnderlyingNetworkCallback();
+        DiagLog.attach(this);
         Log.i(TAG, "WgvpnService created, protect callback registered");
     }
 
@@ -702,6 +718,8 @@ public final class WgvpnService extends VpnService {
             DeviceItem targetItem = new DeviceItem(targetDeviceId, targetName, "", "",
                     targetDeviceUuid, "online", "", "", 3389);
             try {
+                DiagLog.i(TAG, "==== connect session start target=" + targetName + "(" + targetDeviceId + ")"
+                        + (automaticRecovery ? " mode=auto-recovery" : ""));
                 Session session = sessionStore.require();
                 long accountGeneration = sessionStore.accountGeneration();
 
@@ -733,6 +751,7 @@ public final class WgvpnService extends VpnService {
                     throw new IllegalStateException("p2p/open 未返回有效的 connection_id 或 access_grant");
                 }
                 Log.i(TAG, "p2p/open ok: connection_id=" + opened.connectionId + " log_id=" + opened.logId);
+                DiagLog.i(TAG, "p2p/open ok connection_id=" + opened.connectionId + " log_id=" + opened.logId);
                 // 用服务端返回的 target_remote_access 修正 targetItem（协议/端口跟随被控端，
                 // macOS 为 vnc/5900，Windows/Linux 为 rdp/3389），后续上报与状态使用。
                 targetItem = targetItem.withRemoteAccess(
@@ -743,6 +762,7 @@ public final class WgvpnService extends VpnService {
                 String attemptId = ApiClient.buildAttemptId(targetDeviceId, 1);
                 activeAttemptId = attemptId;
                 Log.i(TAG, "generated punch_token=" + punchToken + " attempt_id=" + attemptId);
+                DiagLog.i(TAG, "punch_token=" + punchToken + " attempt_id=" + attemptId);
 
                 // 步骤 4: 通过 WS 发 p2p_notify(attempt_start) 给被动端，等服务端 ack
                 emit(TunnelState.EXCHANGING, "正在通知对端准备隧道", "", "", "");
@@ -830,6 +850,7 @@ public final class WgvpnService extends VpnService {
                     throw new IllegalStateException("对端准备失败：" + readyResult[1]);
                 }
                 Log.i(TAG, "attempt_ready received: rdp_port=" + readyRdpPort[0] + ", starting gonc exchange");
+                DiagLog.i(TAG, "attempt_ready rdp_port=" + readyRdpPort[0]);
 
                 // 步骤 6: gonc Exchange（密钥 + 虚拟 IP 交换，用步骤3生成的 punch_token）
                 emit(TunnelState.EXCHANGING, "正在交换密钥和虚拟 IP", "", "", "");
@@ -856,6 +877,9 @@ public final class WgvpnService extends VpnService {
 
                 ExchangeResult exResult = PunchNative.exchange(
                         punchToken, sendPayload.toString(), "active", 0, EXCHANGE_TIMEOUT_SEC);
+                DiagLog.i(TAG, "exchange token=" + punchToken + " timeout=" + EXCHANGE_TIMEOUT_SEC
+                        + " -> ok=" + exResult.getOK() + " error=" + exResult.getError()
+                        + " recv=" + exResult.getRecvData());
                 ensureStartGeneration(expectedGeneration);
                 if (!exResult.getOK()) {
                     throw new IllegalStateException("密钥交换失败：" + exResult.getError());
@@ -885,6 +909,7 @@ public final class WgvpnService extends VpnService {
                 }
                 Log.i(TAG, "exchange recv: myVirtualIp=" + assignedIp + " peerVirtualIp=" + peerIp
                         + " exposedLan=" + exposedLan);
+                DiagLog.i(TAG, "exchange recv myIp=" + assignedIp + " peerIp=" + peerIp + " exposedLan=" + exposedLan);
 
                 // 步骤 7: gonc StartUdpTunnel
                 emit(TunnelState.PUNCHING, "正在进行 P2P 打洞", "", "", "");
@@ -901,6 +926,12 @@ public final class WgvpnService extends VpnService {
                 tunnelReq.put("allow_relay", false);
 
                 TunnelResult tunnelResult = PunchNative.startUdpTunnel(tunnelReq.toString());
+                DiagLog.i(TAG, "tunnel ok=" + tunnelResult.getOK()
+                        + " traversal=" + tunnelResult.getSelectedTraversal()
+                        + " transport=" + tunnelResult.getTransportMode()
+                        + " peerEndpoint=" + tunnelResult.getPeerEndpoint()
+                        + " nat=" + tunnelResult.getLocalNATType() + "/" + tunnelResult.getRemoteNATType()
+                        + " error=" + tunnelResult.getError());
                 if (!tunnelResult.getOK()) {
                     throw new IllegalStateException("P2P 打洞失败：" + tunnelResult.getError());
                 }
@@ -913,6 +944,7 @@ public final class WgvpnService extends VpnService {
                 Log.i(TAG, "gonc traversal selected=" + tunnelResult.getSelectedTraversal()
                         + " transport=" + tunnelResult.getTransportMode()
                         + " peerEndpoint=" + tunnelResult.getPeerEndpoint());
+                DiagLog.i(TAG, "traversal selected=" + tunnelResult.getSelectedTraversal());
 
                 // 步骤 5: VpnService establish TUN fd
                 emit(TunnelState.CONNECTING, "正在建立虚拟网卡", myVirtualIp, peerVirtualIp, exposedLan);
@@ -978,6 +1010,7 @@ public final class WgvpnService extends VpnService {
                 }
                 Log.i(TAG, "wgAddPeer: endpoint=" + endpoint + " allowedIps=" + allowedIps
                         + " peerPubkey=" + peerPubkeyHex.substring(0, Math.min(16, peerPubkeyHex.length())) + "...");
+                DiagLog.i(TAG, "wgAddPeer endpoint=" + endpoint + " allowedIps=" + allowedIps);
                 WgResult wgPeer = Libwgmobile.wgAddPeer(peerPubkeyHex, endpoint, allowedIps, PERSISTENT_KEEPALIVE);
                 ensureStartGeneration(expectedGeneration);
                 if (!wgPeer.getOK()) {
@@ -1033,6 +1066,7 @@ public final class WgvpnService extends VpnService {
                 connectedAtMs = System.currentTimeMillis();
                 Log.i(TAG, "tunnel CONNECTED: myIp=" + myVirtualIp + " peerIp=" + peerVirtualIp
                         + " health target=" + peerVirtualIp + ":" + HEALTH_PORT);
+                DiagLog.i(TAG, "CONNECTED myIp=" + myVirtualIp + " peerIp=" + peerVirtualIp);
                 networkRecovery.markConnected(expectedGeneration);
                 automaticRecoveryInProgress = false;
                 emit(TunnelState.CONNECTED, "隧道已建立", myVirtualIp, peerVirtualIp, exposedLan);
@@ -1044,6 +1078,7 @@ public final class WgvpnService extends VpnService {
                 String msg = e.getMessage();
                 if (msg == null || msg.isEmpty()) msg = "建立隧道失败";
                 Log.e(TAG, "tunnel failed", e);
+                DiagLog.e(TAG, "tunnel failed", e);
                 String errorCode = classifyErrorCode(msg);
                 boolean superseded = e instanceof RecoverySupersededException
                         || manualStopRequested
@@ -1347,11 +1382,26 @@ public final class WgvpnService extends VpnService {
                     break;
                 }
                 JSONObject ackC = ack.optJSONObject("c");
-                if (ackC == null || !ackC.optBoolean("ok", false)
-                        || ackC.optInt("protocol_version", 0) != TUNNEL_CONTROL_PROTOCOL_VERSION) {
+                // 兼容性握手：只要求对端明确 ok 且版本不低于下限；不设上限
+                // （本端消息集为 v3 基线，向上兼容新增字段/消息；未知消息忽略）。
+                if (ackC == null || !ackC.optBoolean("ok", false)) {
+                    healthFailReason = "健康通道握手被拒：" + ack;
                     Log.w(TAG, "health hello ack rejected: " + ack);
                     break;
                 }
+                int remoteVersion = ackC.optInt("protocol_version", 0);
+                if (remoteVersion > 0 && remoteVersion < TUNNEL_CONTROL_PROTOCOL_MIN_COMPAT) {
+                    healthFailReason = "对端客户端协议版本过旧（对端 v" + remoteVersion
+                            + "，本端要求 ≥ v" + TUNNEL_CONTROL_PROTOCOL_MIN_COMPAT
+                            + "），请升级对端客户端后重试";
+                    Log.w(TAG, "health hello ack protocol too old: " + ack);
+                    break;
+                }
+                if (remoteVersion > TUNNEL_CONTROL_PROTOCOL_VERSION) {
+                    Log.i(TAG, "health handshake ok with peer protocol v" + remoteVersion
+                            + " (local v" + TUNNEL_CONTROL_PROTOCOL_VERSION + ", compatible)");
+                }
+                healthFailReason = "";
                 Log.i(TAG, "health handshake ok, starting heartbeat");
                 tunnelLatencyMs = -1;
                 emitStatusOnly();
@@ -1422,6 +1472,8 @@ public final class WgvpnService extends VpnService {
                 }
             } catch (Exception e) {
                 if (healthClientRunning) {
+                    // 连接/心跳失败：记录原因，测速入口能在等待 60s 超时前给出具体解释。
+                    healthFailReason = "健康通道连接失败（将自动重试）：" + e.getMessage();
                     Log.w(TAG, "health client error (will reconnect): " + e.getMessage());
                 }
             } finally {
@@ -1467,8 +1519,14 @@ public final class WgvpnService extends VpnService {
 
     /** 从 UI 收到测速请求后，交给 health 线程串行执行，避免并发读写控制连接。 */
     private void startSpeedTest() {
-        if (!TunnelState.CONNECTED.equals(activeState) || peerVirtualIp.isEmpty() || !healthClientRunning) {
-            broadcastSpeedResult(false, 0, 0, 0, "隧道未连接或健康通道尚未就绪");
+        // healthSocket==null 说明心跳尚未握手成功（重连退避中）：直接报具体
+        // 原因，避免测速请求挂在 pending 里等满 60s 才超时。
+        if (!TunnelState.CONNECTED.equals(activeState) || peerVirtualIp.isEmpty()
+                || !healthClientRunning || healthSocket == null) {
+            String reason = healthFailReason == null || healthFailReason.isEmpty()
+                    ? "隧道未连接或健康通道尚未就绪"
+                    : healthFailReason;
+            broadcastSpeedResult(false, 0, 0, 0, reason);
             return;
         }
         synchronized (speedTestLock) {
@@ -1843,6 +1901,7 @@ public final class WgvpnService extends VpnService {
     }
 
     private void emit(String state, String message, String vIp, String peerIp, String lan) {
+        DiagLog.i(TAG, "state=" + state + " msg=" + message);
         activeState = state;
         activeMessage = message;
         // 仅在传入非空值时更新对应字段；传 "" 表示「该字段本阶段无新值，保持不变」。

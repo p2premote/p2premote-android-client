@@ -16,6 +16,27 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
+// Temporary diagnostic: mirror JNI call results into logcat (tag
+// "PunchNative") until the empty-error exchange failure is understood.
+#[cfg(target_os = "android")]
+fn logcat(message: &str) {
+    use std::ffi::CString;
+    use std::os::raw::{c_char, c_int};
+    extern "C" {
+        fn __android_log_print(prio: c_int, tag: *const c_char, msg: *const c_char) -> c_int;
+    }
+    let tag = b"PunchNative\0" as *const u8 as *const c_char;
+    for chunk in message.as_bytes().chunks(3500) {
+        let text = CString::new(chunk.to_vec()).unwrap_or_default();
+        unsafe {
+            __android_log_print(4 /* INFO */, tag, text.as_ptr());
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn logcat(_message: &str) {}
+
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jint, jstring};
 use jni::{AttachGuard, JNIEnv, JavaVM};
@@ -49,11 +70,22 @@ fn protect_via_jni(vm: &JavaVM, callback: &GlobalRef, fd: i32) -> bool {
     }
 }
 
+/// Blocking block_on over a PROCESS-WIDE runtime.
+///
+/// The tunnel API spawns long-lived forwarder tasks; if each JNI call used
+/// its own runtime, dropping it after block_on would cancel those tasks the
+/// moment StartUdpTunnel returned — the punched connection would look fine
+/// but carry zero traffic (Go's goroutines survive the return; a per-call
+/// runtime does not).
+static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+
 fn block_on_blocking<F: std::future::Future>(future: F) -> Result<F::Output, String> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| format!("create runtime failed: {err}"))?;
+    let runtime = RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("create tokio runtime")
+    });
     Ok(runtime.block_on(future))
 }
 
@@ -145,18 +177,36 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeExchange(
             timeout_secs,
         };
         let timeout = if timeout_secs <= 0 { 60 } else { timeout_secs };
-        block_on_blocking(p2premote_punch::api::exchange(
+        let ret = block_on_blocking(p2premote_punch::api::exchange(
             request,
             Duration::from_secs(timeout as u64),
-        ))
+        ));
+        logcat(&format!(
+            "exchange done: token_len={} exmode={} timeout={} -> {}",
+            token.len(),
+            exmode,
+            timeout,
+            match &ret {
+                Ok(Ok(r)) => format!("ok={} error={:?} recv_len={}", r.ok, r.error, r.recv_data.len()),
+                Ok(Err(e)) => format!("core error: {:?}", e),
+                Err(e) => format!("runtime error: {:?}", e),
+            }
+        ));
+        ret
     }));
+    // Unwrap carefully: catch_unwind -> block_on_blocking -> api::exchange,
+    // i.e. Ok(Ok(Ok(result))) on success. Serializing the wrong level would
+    // emit serde's externally-tagged {"Ok":{...}} wrapper, which the Java
+    // side cannot parse (it saw ok=false with an empty error).
     let output = match result {
-        Ok(Ok(result)) => serde_json::to_string(&result).unwrap_or_else(|_| {
+        Ok(Ok(Ok(result))) => serde_json::to_string(&result).unwrap_or_else(|_| {
             r#"{"ok":false,"error":"failed to encode exchange result"}"#.to_string()
         }),
+        Ok(Ok(Err(message))) => err_json(message),
         Ok(Err(message)) => err_json(message),
         Err(_) => err_json("internal error: punch library panicked".to_string()),
     };
+    logcat(&format!("exchange output json: {}", output));
     match env.new_string(output) {
         Ok(value) => value.into_raw(),
         Err(err) => throw_and_null(env, format!("create result string failed: {err}")),
@@ -179,15 +229,20 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeStartUdpTunn
             Duration::from_secs(timeout as u64 + 10),
         ))
     }));
+    // Same triple nesting as nativeExchange: catch_unwind -> block_on_blocking
+    // -> api::start_udp_tunnel. Serializing the wrong level would emit serde's
+    // {"Ok":{...}} wrapper instead of the flat JSON contract Java parses.
     let output = match result {
-        Ok(Ok(result)) => serde_json::to_string(&result).unwrap_or_else(|_| {
+        Ok(Ok(Ok(result))) => serde_json::to_string(&result).unwrap_or_else(|_| {
             r#"{"ok":false,"error":"failed to encode tunnel result"}"#.to_string()
         }),
         // The core returns Err(String) for tunnel failures; surface it as the
         // JSON error contract the Java side already parses.
+        Ok(Ok(Err(message))) => err_json(message),
         Ok(Err(message)) => err_json(message),
         Err(_) => err_json("internal error: punch library panicked".to_string()),
     };
+    logcat(&format!("tunnel output json: {}", output));
     match env.new_string(output) {
         Ok(value) => value.into_raw(),
         Err(err) => throw_and_null(env, format!("create result string failed: {err}")),
