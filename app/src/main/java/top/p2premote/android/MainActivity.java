@@ -9,6 +9,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.graphics.Insets;
 import android.graphics.drawable.GradientDrawable;
@@ -18,11 +19,14 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowInsets;
+import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -48,6 +52,13 @@ public final class MainActivity extends Activity {
     private static final int PAGE_DEVICES = 1;
     private static final int PAGE_PROFILE = 2;
     private static final int VPN_PERMISSION_REQUEST = 100;
+    private static final int NOTIFICATION_PERMISSION_REQUEST = 101;
+    private static final int SCREEN_LOADING = 0;
+    private static final int SCREEN_LOGIN = 1;
+    private static final int SCREEN_REGISTER = 2;
+    private static final int SCREEN_FORGOT_PASSWORD = 3;
+    private static final int SCREEN_APP = 4;
+    private static final int SCREEN_FORCE_UPDATE = 5;
     private static final String DEFAULT_SERVER_URL = "https://cli.p2premote.top";
     private static final String CLIENT_DOWNLOAD_PAGE_URL = "https://www.p2premote.top/#download";
 
@@ -64,6 +75,9 @@ public final class MainActivity extends Activity {
     private ProgressBar progress;
     private TextView statusView;
     private int currentPage = PAGE_CONNECT;
+    private int currentScreen = SCREEN_LOADING;
+    /** 通用串行操作锁，避免登录、验证码、刷新等操作被快速重复提交。 */
+    private boolean operationBusy = false;
 
     // 隧道状态（由 WgvpnService 广播驱动）
     private String currentTunnelState = TunnelState.IDLE;
@@ -205,7 +219,6 @@ public final class MainActivity extends Activity {
         apiClient = new ApiClient(sessionStore);
         selectedDeviceId = sessionStore.getSelectedDeviceId();
         registerTunnelReceiver();
-        requestNotificationPermissionIfNeeded();
         checkVersionAtStartup();
     }
 
@@ -254,6 +267,7 @@ public final class MainActivity extends Activity {
             return;
         }
         // 已认证冷启动：版本通过后才启动在线保活并恢复主界面。
+        requestNotificationPermissionIfNeeded();
         startPresenceService();
         showApp(PAGE_CONNECT);
         refreshDevices("正在同步设备...");
@@ -273,6 +287,7 @@ public final class MainActivity extends Activity {
 
     /** 强制更新页不可绕过；同时停止旧版本仍可能运行的连接服务。 */
     private void showForceUpdate(ClientVersionPolicy policy) {
+        currentScreen = SCREEN_FORCE_UPDATE;
         callbackGeneration++;
         stopPresenceService();
         Intent stopTunnelIntent = new Intent(this, WgvpnService.class);
@@ -335,6 +350,20 @@ public final class MainActivity extends Activity {
         queryTunnelStatus();
     }
 
+    @Override
+    public void onBackPressed() {
+        if (currentScreen == SCREEN_REGISTER || currentScreen == SCREEN_FORGOT_PASSWORD) {
+            showLogin();
+            return;
+        }
+        if (currentScreen == SCREEN_APP && currentPage != PAGE_CONNECT) {
+            showApp(PAGE_CONNECT);
+            return;
+        }
+        if (currentScreen == SCREEN_LOADING || currentScreen == SCREEN_FORCE_UPDATE) return;
+        super.onBackPressed();
+    }
+
     /**
      * 向 WgvpnService 查询当前隧道状态。服务未运行时 startService 会拉起 onCreate
      * 但无任务，回查静默无效；服务运行中则回发最新状态广播。
@@ -390,6 +419,7 @@ public final class MainActivity extends Activity {
     // ============ 登录页 ============
 
     private void showLogin() {
+        currentScreen = SCREEN_LOGIN;
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         LinearLayout page = new LinearLayout(this);
@@ -415,6 +445,15 @@ public final class MainActivity extends Activity {
         EditText identifier = loginIdentifier;
         EditText password = loginPassword;
         Button login = primaryButton("登录");
+        password.setImeOptions(EditorInfo.IME_ACTION_DONE);
+        password.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_DONE
+                    || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                login.performClick();
+                return true;
+            }
+            return false;
+        });
         progress = progressBar();
         statusView = muted("");
 
@@ -454,7 +493,7 @@ public final class MainActivity extends Activity {
         advancedToggle.setOnClickListener(v -> {
             if (serverUrlRef[0] == null) {
                 // 展开：创建输入框插入到高级开关之后
-                serverUrlRef[0] = input("服务地址", false);
+                serverUrlRef[0] = serverUrlInput();
                 serverUrlRef[0].setText(DEFAULT_SERVER_URL);
                 card.addView(serverUrlRef[0], advancedIndex[0] + 1);
                 advancedToggle.setText("▾ 高级");
@@ -495,6 +534,7 @@ public final class MainActivity extends Activity {
                 cachedDevices.addAll(devices);
                 currentPage = PAGE_CONNECT;
                 // 登录注册成功后启动在线保活（device_id/device_uuid 已持久化）。
+                requestNotificationPermissionIfNeeded();
                 startPresenceService();
                 showApp(PAGE_CONNECT);
             });
@@ -504,6 +544,7 @@ public final class MainActivity extends Activity {
     // ============ 注册页 ============
 
     private void showRegister() {
+        currentScreen = SCREEN_REGISTER;
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         LinearLayout page = new LinearLayout(this);
@@ -526,6 +567,7 @@ public final class MainActivity extends Activity {
         TextView subtitle = muted("使用邮箱验证码完成注册");
         EditText regUsername = input("用户名（3-30位）", false);
         EditText regEmail = input("邮箱", false);
+        regEmail.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
         Button regSendCodeBtn = outlineButton("发送验证码", 0xFF2563EB);
         EditText regVerificationCode = input("6位邮箱验证码（5分钟内有效）", false);
         regVerificationCode.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -534,6 +576,15 @@ public final class MainActivity extends Activity {
         EditText regConfirmPassword = input("确认密码", true);
         EditText regInviteCode = input("邀请码（选填）", false);
         Button registerBtn = primaryButton("注册");
+        regConfirmPassword.setImeOptions(EditorInfo.IME_ACTION_DONE);
+        regConfirmPassword.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_DONE
+                    || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                registerBtn.performClick();
+                return true;
+            }
+            return false;
+        });
         progress = progressBar();
         statusView = muted("");
         TextView backToLogin = helpText("已有账号？返回登录");
@@ -564,7 +615,7 @@ public final class MainActivity extends Activity {
 
         advancedToggle.setOnClickListener(v -> {
             if (serverUrlRef[0] == null) {
-                serverUrlRef[0] = input("服务地址", false);
+                serverUrlRef[0] = serverUrlInput();
                 serverUrlRef[0].setText(DEFAULT_SERVER_URL);
                 card.addView(serverUrlRef[0], advancedIndex[0] + 1);
                 advancedToggle.setText("▾ 高级");
@@ -580,7 +631,8 @@ public final class MainActivity extends Activity {
         regSendCodeBtn.setOnClickListener(v -> {
             String email = regEmail.getText().toString().trim();
             if (!android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
-                toast("请输入有效的邮箱地址");
+                regEmail.setError("请输入有效的邮箱地址");
+                regEmail.requestFocus();
                 return;
             }
             String serverUrl = (serverUrlRef[0] != null && !serverUrlRef[0].getText().toString().trim().isEmpty())
@@ -589,7 +641,10 @@ public final class MainActivity extends Activity {
             runAsync("正在发送验证码...", () -> {
                 apiClient.sendVerificationCode(serverUrl, email, "register");
                 return null;
-            }, _unused -> toast("验证码已发送，5分钟内有效，请检查邮箱"));
+            }, _unused -> {
+                startCodeCooldown(regSendCodeBtn);
+                toast("验证码已发送，5分钟内有效，请检查邮箱");
+            });
         });
 
         registerBtn.setOnClickListener(v -> {
@@ -600,16 +655,16 @@ public final class MainActivity extends Activity {
             String confirmPassword = regConfirmPassword.getText().toString();
             String inviteCode = regInviteCode.getText().toString().trim();
 
-            if (username.length() < 3) { toast("用户名至少3个字符"); return; }
-            if (username.length() > 30) { toast("用户名最多30个字符"); return; }
+            if (username.length() < 3) { regUsername.setError("用户名至少3个字符"); regUsername.requestFocus(); return; }
+            if (username.length() > 30) { regUsername.setError("用户名最多30个字符"); regUsername.requestFocus(); return; }
             if (!android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
-                toast("请输入有效的邮箱地址"); return;
+                regEmail.setError("请输入有效的邮箱地址"); regEmail.requestFocus(); return;
             }
             if (!VerificationCodeValidator.isValidEmailCode(verificationCode)) {
-                toast("请输入6位数字邮箱验证码"); return;
+                regVerificationCode.setError("请输入6位数字邮箱验证码"); regVerificationCode.requestFocus(); return;
             }
-            if (password.length() < 6) { toast("密码至少6位"); return; }
-            if (!confirmPassword.equals(password)) { toast("两次输入的密码不一致"); return; }
+            if (password.length() < 6) { regPassword.setError("密码至少6位"); regPassword.requestFocus(); return; }
+            if (!confirmPassword.equals(password)) { regConfirmPassword.setError("两次输入的密码不一致"); regConfirmPassword.requestFocus(); return; }
 
             String serverUrl = (serverUrlRef[0] != null && !serverUrlRef[0].getText().toString().trim().isEmpty())
                     ? serverUrlRef[0].getText().toString()
@@ -627,6 +682,7 @@ public final class MainActivity extends Activity {
     // ============ 忘记密码页 ============
 
     private void showForgotPassword() {
+        currentScreen = SCREEN_FORGOT_PASSWORD;
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         LinearLayout page = new LinearLayout(this);
@@ -649,6 +705,7 @@ public final class MainActivity extends Activity {
         TextView subtitle = muted("输入注册邮箱，发送验证码后重置密码");
 
         EditText forgotEmail = input("注册邮箱", false);
+        forgotEmail.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
         EditText forgotCaptcha = input("邮箱验证码（5分钟内有效）", false);
         forgotCaptcha.setInputType(InputType.TYPE_CLASS_NUMBER);
         forgotCaptcha.setFilters(new InputFilter[]{new InputFilter.LengthFilter(6)});
@@ -656,6 +713,15 @@ public final class MainActivity extends Activity {
         EditText forgotNewPassword = input("新密码（至少 6 位）", true);
         EditText forgotConfirmPassword = input("确认新密码", true);
         Button forgotResetBtn = primaryButton("重置密码");
+        forgotConfirmPassword.setImeOptions(EditorInfo.IME_ACTION_DONE);
+        forgotConfirmPassword.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_DONE
+                    || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                forgotResetBtn.performClick();
+                return true;
+            }
+            return false;
+        });
         progress = progressBar();
         statusView = muted("");
         TextView forgotBack = helpText("返回登录");
@@ -690,7 +756,7 @@ public final class MainActivity extends Activity {
 
         advancedToggle.setOnClickListener(v -> {
             if (serverUrlRef[0] == null) {
-                serverUrlRef[0] = input("服务地址", false);
+                serverUrlRef[0] = serverUrlInput();
                 serverUrlRef[0].setText(DEFAULT_SERVER_URL);
                 int idx = card.indexOfChild(advancedToggle);
                 card.addView(serverUrlRef[0], idx + 1);
@@ -708,7 +774,8 @@ public final class MainActivity extends Activity {
         forgotSendBtn.setOnClickListener(v -> {
             String email = forgotEmail.getText().toString().trim();
             if (!android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
-                toast("请输入有效的邮箱地址");
+                forgotEmail.setError("请输入有效的邮箱地址");
+                forgotEmail.requestFocus();
                 return;
             }
             String serverUrl = (serverUrlRef[0] != null && !serverUrlRef[0].getText().toString().trim().isEmpty())
@@ -723,6 +790,7 @@ public final class MainActivity extends Activity {
                 forgotNewPassword.setVisibility(View.VISIBLE);
                 forgotConfirmPassword.setVisibility(View.VISIBLE);
                 forgotResetBtn.setVisibility(View.VISIBLE);
+                startCodeCooldown(forgotSendBtn);
                 toast("如果该邮箱已注册，验证码将发送到邮箱，请注意查收");
             });
         });
@@ -734,11 +802,11 @@ public final class MainActivity extends Activity {
             String newPassword = forgotNewPassword.getText().toString();
             String confirmPassword = forgotConfirmPassword.getText().toString();
 
-            if (!VerificationCodeValidator.isValidEmailCode(captcha)) { toast("请输入6位数字邮箱验证码"); return; }
+            if (!VerificationCodeValidator.isValidEmailCode(captcha)) { forgotCaptcha.setError("请输入6位数字邮箱验证码"); forgotCaptcha.requestFocus(); return; }
             if (!PasswordValidator.isValid(newPassword)) {
-                toast("新密码至少6位，且必须同时包含英文字母和数字"); return;
+                forgotNewPassword.setError("至少6位，且必须同时包含英文字母和数字"); forgotNewPassword.requestFocus(); return;
             }
-            if (!confirmPassword.equals(newPassword)) { toast("两次输入的密码不一致"); return; }
+            if (!confirmPassword.equals(newPassword)) { forgotConfirmPassword.setError("两次输入的密码不一致"); forgotConfirmPassword.requestFocus(); return; }
 
             String serverUrl = (serverUrlRef[0] != null && !serverUrlRef[0].getText().toString().trim().isEmpty())
                     ? serverUrlRef[0].getText().toString()
@@ -756,6 +824,7 @@ public final class MainActivity extends Activity {
     // ============ 主框架 ============
 
     private void showApp(int page) {
+        currentScreen = SCREEN_APP;
         currentPage = page;
         // 离开登录页，释放登录输入框引用（B5 高亮不再需要）。
         loginIdentifier = null;
@@ -923,13 +992,16 @@ public final class MainActivity extends Activity {
         return null;
     }
 
-    /** 连接页顶部目标设备卡片（纯展示，不可点击）。 */
+    /** 连接页顶部目标设备卡片；点击即可选择或更换目标。 */
     private View targetCard() {
         LinearLayout card = card();
+        card.setContentDescription("选择或更换连接设备");
+        applyPressFeedback(card);
+        card.setOnClickListener(v -> showApp(PAGE_DEVICES));
         DeviceItem target = selectedDevice();
         if (target == null) {
             card.addView(body("未选择目标设备"));
-            card.addView(helpText("请到「设备」页选择要连接的设备"));
+            card.addView(helpText("点击选择要连接的设备"));
             return card;
         }
         LinearLayout row = horizontal();
@@ -941,7 +1013,7 @@ public final class MainActivity extends Activity {
                 isOnline(target) ? 0xFF16A34A : 0xFF64748B));
         card.addView(row);
         // B3：连接页只保留名称+状态+类型，详细 IP/位置信息留在「设备」页（避免重复展示）。
-        card.addView(helpText(target.type.isEmpty() ? "切换设备请到「设备」页" : target.type));
+        card.addView(helpText(target.type.isEmpty() ? "点击更换设备" : target.type + " · 点击更换"));
         return card;
     }
 
@@ -967,10 +1039,10 @@ public final class MainActivity extends Activity {
             listener = v -> stopTunnel();
             enabled = true;
         } else if (active) {
-            text = "建立中...";
-            bgColor = 0xFFE2E8F0; txtColor = 0xFF94A3B8;
+            text = "取消连接";
+            bgColor = 0xFFDC2626; txtColor = 0xFFFFFFFF;
             listener = v -> stopTunnel();
-            enabled = false;
+            enabled = true;
         } else if (target == null) {
             text = "请先选择设备";
             bgColor = 0xFFE2E8F0; txtColor = 0xFF94A3B8;
@@ -1082,7 +1154,10 @@ public final class MainActivity extends Activity {
             if (isOnline(device)) remoteOnline++;
         }
         int totalRemote = remote.size();
-        String subtitle = "共 " + totalRemote + " 台设备，" + remoteOnline + " 台在线";
+        String syncText = PresenceService.STATE_CONNECTED.equals(presenceState)
+                ? "状态已同步"
+                : (PresenceService.STATE_CONNECTING.equals(presenceState) ? "正在同步" : "同步已断开");
+        String subtitle = "共 " + totalRemote + " 台，" + remoteOnline + " 台在线 · " + syncText;
         contentRoot.addView(topBar("设备", subtitle, true));
 
         // 本机设备卡片（置顶、独立浅蓝底、可改别名、不可选为目标）
@@ -1179,19 +1254,14 @@ public final class MainActivity extends Activity {
                 isOnline(device) ? 0xFF16A34A : 0xFF64748B));
         card.addView(row);
         card.addView(helpText(device.type));
-        if (!device.systemVersion.isEmpty()) {
-            card.addView(helpText("系统版本：" + device.systemVersion));
-        }
-        if (!device.clientVersion.isEmpty()) {
-            card.addView(helpText("客户端版本：" + device.clientVersion));
-        }
         if (!canAcceptP2P) {
             card.addView(helpText("该设备不能作为连接目标"));
         }
-        card.addView(helpText("公网 IP：" + emptyAsUnknown(device.publicIp)));
-        if (!device.publicIpLocation.isEmpty()) {
-            card.addView(helpText("IP 位置：" + device.publicIpLocation));
-        }
+
+		TextView details = helpText("查看设备详情");
+		details.setTextColor(0xFF2563EB);
+		details.setOnClickListener(v -> showDeviceDetails(device));
+		card.addView(details);
 		if (!isOnline(device) && device.wakeAvailable) {
 			Button wake=primaryButton("唤醒设备");
 				wake.setOnClickListener(v -> runAsync("正在发送唤醒包...",()->apiClient.wakeDevice(device.id), status->{ if("sent".equals(status))toast("唤醒包已发送");else toast(wolError(status)); }));
@@ -1204,12 +1274,27 @@ public final class MainActivity extends Activity {
             card.setOnClickListener(v -> {
                 selectedDeviceId = device.id;
                 sessionStore.setSelectedDeviceId(device.id);
-                renderCurrentPage();
+                toast("已选择 " + (device.displayName().isEmpty() ? "目标设备" : device.displayName()));
+                showApp(PAGE_CONNECT);
             });
         } else {
             card.setAlpha(0.65f);
         }
         return card;
+    }
+
+    private void showDeviceDetails(DeviceItem device) {
+        StringBuilder details = new StringBuilder();
+        details.append("系统：").append(device.type.isEmpty() ? "未知" : device.type);
+        if (!device.systemVersion.isEmpty()) details.append("\n系统版本：").append(device.systemVersion);
+        if (!device.clientVersion.isEmpty()) details.append("\n客户端版本：").append(device.clientVersion);
+        details.append("\n公网 IP：").append(emptyAsUnknown(device.publicIp));
+        if (!device.publicIpLocation.isEmpty()) details.append("\nIP 位置：").append(device.publicIpLocation);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(device.displayName().isEmpty() ? "设备详情" : device.displayName())
+                .setMessage(details.toString())
+                .setPositiveButton("关闭", null)
+                .show();
     }
 
     private ImageView platformIcon(DeviceItem device, int color) {
@@ -1234,6 +1319,7 @@ public final class MainActivity extends Activity {
         Session session = sessionStore.load();
 
         // 账号
+        contentRoot.addView(sectionTitle("账号"));
         LinearLayout account = card();
         account.addView(body(session == null || session.username.isEmpty() ? "已登录" : session.username));
         account.addView(helpText("当前账号"));
@@ -1262,6 +1348,7 @@ public final class MainActivity extends Activity {
         contentRoot.addView(account);
 
         // 本机设备别名（可编辑）
+        contentRoot.addView(sectionTitle("本机设备"));
         DeviceItem self = currentDevice();
         LinearLayout aliasCard = card();
         String alias = self == null ? "" : self.alias;
@@ -1276,7 +1363,8 @@ public final class MainActivity extends Activity {
         aliasCard.addView(setAlias);
         contentRoot.addView(aliasCard);
 
-        // 设备 UUID（原为设备 ID）
+        // 支持与诊断：收纳 UUID、通知权限和诊断日志等低频排障能力。
+        contentRoot.addView(sectionTitle("支持与诊断"));
         LinearLayout devUuid = card();
         TextView uuidView = body(session == null || session.deviceUuid.isEmpty()
                 ? "—" : session.deviceUuid);
@@ -1292,17 +1380,15 @@ public final class MainActivity extends Activity {
         devUuid.addView(helpText("设备 UUID（点击复制）"));
         contentRoot.addView(devUuid);
 
-        LinearLayout versionCard = card();
-        versionCard.addView(body("v" + BuildConfig.VERSION_NAME));
-        versionCard.addView(helpText(getString(R.string.current_version)));
-        Button checkUpdate = outlineButton(getString(R.string.check_for_updates), 0xFF2563EB);
-        LinearLayout.LayoutParams checkUpdateParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        checkUpdateParams.topMargin = dp(8);
-        versionCard.addView(checkUpdate, checkUpdateParams);
-        contentRoot.addView(versionCard);
-        checkUpdate.setOnClickListener(view -> checkVersionManually());
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            Button notificationSettings = outlineButton("开启后台连接通知", 0xFF2563EB);
+            notificationSettings.setOnClickListener(v -> startActivity(new Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName()))));
+            contentRoot.addView(notificationSettings);
+        }
 
         // 诊断日志卡片：真机排障时无需 adb 即可导出连接过程关键事件。
         LinearLayout diagCard = card();
@@ -1326,6 +1412,19 @@ public final class MainActivity extends Activity {
         contentRoot.addView(diagCard);
         shareDiag.setOnClickListener(v -> shareDiagLog());
         clearDiag.setOnClickListener(v -> confirmClearDiagLog());
+
+        contentRoot.addView(sectionTitle("关于"));
+        LinearLayout versionCard = card();
+        versionCard.addView(body("v" + BuildConfig.VERSION_NAME));
+        versionCard.addView(helpText(getString(R.string.current_version)));
+        Button checkUpdate = outlineButton(getString(R.string.check_for_updates), 0xFF2563EB);
+        LinearLayout.LayoutParams checkUpdateParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        checkUpdateParams.topMargin = dp(8);
+        versionCard.addView(checkUpdate, checkUpdateParams);
+        contentRoot.addView(versionCard);
+        checkUpdate.setOnClickListener(view -> checkVersionManually());
 
         Button logout = outlineButton("退出登录", 0xFFB91C1C);
         logout.setOnClickListener(v -> confirmLogout());
@@ -1406,6 +1505,7 @@ public final class MainActivity extends Activity {
     private void performLogout() {
         // 已在执行的列表刷新/别名更新不能在清空会话后再改写当前页面。
         callbackGeneration++;
+        operationBusy = false;
         stopTunnel();
         stopPresenceService();
         cachedDevices.clear();
@@ -1607,9 +1707,21 @@ public final class MainActivity extends Activity {
     }
 
     private void requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
-        }
+        if (Build.VERSION.SDK_INT < 33
+                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED) return;
+        android.content.SharedPreferences prefs = getSharedPreferences("ui_prefs", MODE_PRIVATE);
+        if (prefs.getBoolean("notification_permission_asked", false)) return;
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("允许后台连接通知")
+                .setMessage("通知用于显示设备在线与 VPN 连接状态。拒绝后仍可使用应用，但后台连接状态可能不易察觉。")
+                .setPositiveButton("继续", (dialog, which) -> {
+                    prefs.edit().putBoolean("notification_permission_asked", true).apply();
+                    requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                            NOTIFICATION_PERMISSION_REQUEST);
+                })
+                .setNegativeButton("暂不", null)
+                .show();
     }
 
     /** 毫秒差值格式化为「X分Y秒」/「X秒」，用于展示已连接时长。 */
@@ -1648,6 +1760,11 @@ public final class MainActivity extends Activity {
     }
 
     private <T> void runAsync(String loadingText, Task<T> task, Success<T> success) {
+        if (operationBusy) {
+            toast("操作正在进行，请稍候");
+            return;
+        }
+        operationBusy = true;
         final int generation = callbackGeneration;
         setBusy(true, loadingText);
         executor.execute(() -> {
@@ -1655,6 +1772,7 @@ public final class MainActivity extends Activity {
                 T result = task.run();
                 mainHandler.post(() -> {
                     if (!acceptsCallback(generation)) return;
+                    operationBusy = false;
                     setBusy(false, "");
                     success.accept(result);
                 });
@@ -1662,6 +1780,7 @@ public final class MainActivity extends Activity {
                 android.util.Log.e("p2pRemote", "async failed", e);
                 mainHandler.post(() -> {
                     if (!acceptsCallback(generation)) return;
+                    operationBusy = false;
                     if (e instanceof ForceUpdateRequiredException) {
                         setBusy(false, "");
                         showForceUpdate(((ForceUpdateRequiredException) e).policy);
@@ -1895,6 +2014,7 @@ public final class MainActivity extends Activity {
         EditText edit = new EditText(this);
         edit.setHint(hint);
         edit.setSingleLine(true);
+        edit.setImeOptions(EditorInfo.IME_ACTION_NEXT);
         edit.setTextSize(15);
         edit.setInputType(password
                 ? InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -1906,6 +2026,30 @@ public final class MainActivity extends Activity {
         lp.setMargins(0, dp(12), 0, 0);
         edit.setLayoutParams(lp);
         return edit;
+    }
+
+    private EditText serverUrlInput() {
+        EditText edit = input("服务地址", false);
+        edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        return edit;
+    }
+
+    private void startCodeCooldown(Button button) {
+        button.setEnabled(false);
+        final long endAt = System.currentTimeMillis() + 60_000L;
+        Runnable countdown = new Runnable() {
+            @Override public void run() {
+                long remaining = Math.max(0, (endAt - System.currentTimeMillis() + 999) / 1000);
+                if (remaining == 0) {
+                    button.setText("重新发送验证码");
+                    button.setEnabled(true);
+                    return;
+                }
+                button.setText(remaining + " 秒后可重发");
+                mainHandler.postDelayed(this, 1000L);
+            }
+        };
+        countdown.run();
     }
 
     private Button primaryButton(String text) { return styledButton(text, 0xFF2563EB, 0xFFFFFFFF, 14); }
