@@ -25,8 +25,8 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ImageView;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -1122,6 +1122,7 @@ public final class MainActivity extends Activity {
         card.setLayoutParams(lp);
 
         LinearLayout row = horizontal();
+        row.addView(platformIcon(self, 0xFF16A34A));
         TextView name = body(self.alias.isEmpty()
                 ? (self.name.isEmpty() ? "本机设备" : self.name)
                 : self.alias);
@@ -1169,6 +1170,7 @@ public final class MainActivity extends Activity {
         card.setLayoutParams(lp);
 
         LinearLayout row = horizontal();
+        row.addView(platformIcon(device, isOnline(device) ? 0xFF16A34A : 0xFF64748B));
         TextView name = body(device.displayName().isEmpty() ? "未命名设备" : device.displayName());
         name.setTextSize(17);
         name.setTypeface(Typeface.DEFAULT_BOLD);
@@ -1208,6 +1210,17 @@ public final class MainActivity extends Activity {
             card.setAlpha(0.65f);
         }
         return card;
+    }
+
+    private ImageView platformIcon(DeviceItem device, int color) {
+        DevicePlatform.Kind platform = DevicePlatform.detect(device);
+        ImageView icon = new ImageView(this);
+        icon.setImageDrawable(new PlatformIconDrawable(platform, color));
+        icon.setContentDescription(DevicePlatform.label(platform));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(24), dp(24));
+        params.setMarginEnd(dp(10));
+        icon.setLayoutParams(params);
+        return icon;
     }
 
 	private String wolError(String status) { if("no_relay".equals(status))return "目标局域网内没有可用的在线节点"; if("relay_timeout".equals(status))return "唤醒节点响应超时"; if("target_online".equals(status))return "设备已经在线"; if("unsupported".equals(status))return "设备尚未上报唤醒能力"; return "唤醒包发送失败"; }
