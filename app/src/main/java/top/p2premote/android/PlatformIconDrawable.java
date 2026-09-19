@@ -12,12 +12,27 @@ import androidx.core.graphics.PathParser;
 
 final class PlatformIconDrawable extends Drawable {
     private final DevicePlatform.Kind platform;
+    /** 构造时解析一次；解析失败（畸形路径数据）时为 null，draw 回退到未知图标。 */
+    private final Path path;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     PlatformIconDrawable(DevicePlatform.Kind platform, int color) {
         this.platform = platform;
-        paint.setColor(color);
-        paint.setStyle(Paint.Style.FILL);
+        this.paint.setColor(color);
+        this.paint.setStyle(Paint.Style.FILL);
+        this.path = parsePath(platform);
+    }
+
+    /** PathParser 对畸形路径数据（如奇数个 lineto 参数）会抛异常，必须隔离。 */
+    private static Path parsePath(DevicePlatform.Kind platform) {
+        String data = pathData(platform);
+        if (data == null) return null;
+        try {
+            return PathParser.createPathFromPathData(data);
+        } catch (RuntimeException e) {
+            android.util.Log.e("p2pRemote", "platform icon path parse failed: " + platform, e);
+            return null;
+        }
     }
 
     @Override public void draw(Canvas canvas) {
@@ -29,9 +44,7 @@ final class PlatformIconDrawable extends Drawable {
         canvas.translate(b.left + (b.width() - viewportSize * scale) / 2f,
                 b.top + (b.height() - viewportSize * scale) / 2f);
         canvas.scale(scale, scale);
-        String data = pathData(platform);
-        if (data != null) {
-            Path path = PathParser.createPathFromPathData(data);
+        if (path != null) {
             canvas.drawPath(path, paint);
         } else {
             drawUnknown(canvas);
@@ -71,7 +84,7 @@ final class PlatformIconDrawable extends Drawable {
             case KYLIN:
                 // Keep this path and its 16.7 viewport in sync with the desktop client.
                 return "M7.94.07 5.81 2.25l-.54-.06-.44 1.77 2.22-1.17-.49-2.03.89-2.72"
-                        + "M4.83 3.96l1.35 1.56 1.36-.69L5.81 2.25 3.89 2.96l.42 3.75L2.14 4.03l-.89 1.82L.03 7.93l1.15 2.84.37 2.24-.77.92-.81.98h2.21l.28-1.99.89-1.36 1.48.25 1.64-.65 1.21-.62 1.18.79-1.42 1.69-1.45 1.37 2.28.03.01-.93 1.73-1.37.63.8-1.82 2.59 2.32.01-.08-1.3 1.66-1.57-.85-1.72-.1-2.12 1.7-1 .96.2 1.31-.49.37-2.63-2.04.6-1.24 1.86-2.09 1.11-2.92-1.18-2.13-1.58 1.39-1.95-.49-2.04-2.71.87-2.72"
+                        + "M4.83 3.96l1.35 1.56 1.36-.69L5.81 2.25 3.89 2.96l.42 3.75L2.14 4.03l-.89 1.82L.03 7.93l1.15 2.84.37 2.24-.77.92-.81.98h2.21l.28-1.99.89-1.36 1.48.25 1.64-.65 1.21-.62 1.18.79-1.42 1.69-1.45 1.37 2.28.03.01-.93 1.73-1.37.63.8-1.82 2.59 2.32.01-.08-1.3 1.66-1.57-.85-1.72-.1-2.12 1.7-1 .96.2 1.31-.49.37-2.63-2.04.6-1.24 1.86-2.09 1.11-2.92-1.18-2.13-1.58 1.39-1.95-.49-2.04-2.71.87"
                         + "M2.05 6.32v2.13l3.13.63-.87-2.37-2.26-.39m3.13 2.76-.37 1.83 3.48-.73-.01-1.82-3.1.72m3.1 1.1 2.3.94.61-1.57-2.91.63m2.91-.63 1.02.35 1.07-1.46-2.09 1.11m2.09-1.11.63.46.61-2.32-1.24 1.86";
             case LINUX:
                 return "M12,2 C9.9,2 8.2,4 8.2,6.4 C6.7,8 5.8,10.8 5.8,14.2 C5.8,18.2 8.6,21.4 12,21.4 C15.4,21.4 18.2,18.2 18.2,14.2 C18.2,10.8 17.3,8 15.8,6.4 C15.8,4 14.1,2 12,2 Z";

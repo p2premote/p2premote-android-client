@@ -140,6 +140,8 @@ public final class MainActivity extends Activity {
             if (WgvpnService.ACTION_SPEED_RESULT.equals(intent.getAction())) {
                 speedTesting = false;
                 renderCurrentPage();
+                // 测速结果可能在应用退后台后送达；后台弹 Dialog 会 BadTokenException。
+                if (!canShowDialog()) return;
                 boolean success = intent.getBooleanExtra(WgvpnService.EXTRA_SPEED_SUCCESS, false);
                 if (success) {
                     double latency = intent.getDoubleExtra(WgvpnService.EXTRA_SPEED_LATENCY_MS, 0);
@@ -205,7 +207,7 @@ public final class MainActivity extends Activity {
             presenceWasConnected = PresenceService.STATE_CONNECTED.equals(newState);
             renderCurrentPage();
             if (justConnected) {
-                refreshDevices("正在同步在线状态...");
+                refreshDevicesQuietly();
             }
         }
     };
@@ -274,6 +276,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showOptionalUpdate(ClientVersionPolicy policy) {
+        if (!canShowDialog()) return;
         String message = getString(R.string.update_available_message,
                 policy.latestVersion, BuildConfig.VERSION_NAME);
         if (!policy.releaseNotes.isEmpty()) message += "\n\n" + policy.releaseNotes;
@@ -292,7 +295,7 @@ public final class MainActivity extends Activity {
         stopPresenceService();
         Intent stopTunnelIntent = new Intent(this, WgvpnService.class);
         stopTunnelIntent.setAction(WgvpnService.ACTION_STOP);
-        startService(stopTunnelIntent);
+        tryStartService(stopTunnelIntent);
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -397,7 +400,19 @@ public final class MainActivity extends Activity {
     private void stopPresenceService() {
         Intent intent = new Intent(this, PresenceService.class);
         intent.setAction(PresenceService.ACTION_STOP);
-        startService(intent);
+        tryStartService(intent);
+    }
+
+    /**
+     * 应用退到后台后（uid 进入 cached/idle）再 startService 会抛
+     * IllegalStateException 杀掉进程；停止/查询类意图失败可直接忽略。
+     */
+    private void tryStartService(Intent intent) {
+        try {
+            startService(intent);
+        } catch (IllegalStateException | SecurityException ignored) {
+            // 后台限制或服务未运行：停止意图丢失无碍，服务自行回收。
+        }
     }
 
     @Override
@@ -1654,7 +1669,7 @@ public final class MainActivity extends Activity {
     private void stopTunnel() {
         Intent intent = new Intent(this, WgvpnService.class);
         intent.setAction(WgvpnService.ACTION_STOP);
-        startService(intent);
+        tryStartService(intent);
         currentTunnelState = TunnelState.STOPPED;
         currentTunnelMessage = "已请求断开隧道";
         peerVirtualIp = "";
@@ -1672,13 +1687,28 @@ public final class MainActivity extends Activity {
         renderCurrentPage();
         Intent intent = new Intent(this, WgvpnService.class);
         intent.setAction(WgvpnService.ACTION_TEST_SPEED);
-        startService(intent);
+        tryStartService(intent);
     }
 
     // ============ 工具方法 ============
 
     private void refreshDevices(String message) {
         runAsync(message, () -> {
+            apiClient.registerCurrentDevice(this);
+            return apiClient.listDevices();
+        }, devices -> {
+            cachedDevices.clear();
+            cachedDevices.addAll(devices);
+            renderCurrentPage();
+        });
+    }
+
+    /**
+     * 在线保活连上后的自动同步：静默执行。冷启动的首刷与 WS 建连几乎同时发生，
+     * 若走 runAsync 会被 operationBusy 拦下并弹「操作正在进行」打扰用户。
+     */
+    private void refreshDevicesQuietly() {
+        runBackgroundAsync(() -> {
             apiClient.registerCurrentDevice(this);
             return apiClient.listDevices();
         }, devices -> {
@@ -1706,12 +1736,18 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** 广播/异步回调里弹 AlertDialog 前必须确认 Activity 在前台。 */
+    private boolean canShowDialog() {
+        return !destroyed && !isFinishing() && !isDestroyed();
+    }
+
     private void requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT < 33
                 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 == PackageManager.PERMISSION_GRANTED) return;
         android.content.SharedPreferences prefs = getSharedPreferences("ui_prefs", MODE_PRIVATE);
         if (prefs.getBoolean("notification_permission_asked", false)) return;
+        if (!canShowDialog()) return;
         new android.app.AlertDialog.Builder(this)
                 .setTitle("允许后台连接通知")
                 .setMessage("通知用于显示设备在线与 VPN 连接状态。拒绝后仍可使用应用，但后台连接状态可能不易察觉。")
@@ -1771,16 +1807,18 @@ public final class MainActivity extends Activity {
             try {
                 T result = task.run();
                 mainHandler.post(() -> {
-                    if (!acceptsCallback(generation)) return;
+                    // busy 复位必须先于代际判断：代际被取消的回调若不复位，
+                    // operationBusy 会永久卡死，后续所有操作只弹「操作正在进行」。
                     operationBusy = false;
+                    if (!acceptsCallback(generation)) return;
                     setBusy(false, "");
                     success.accept(result);
                 });
             } catch (final Exception e) {
                 android.util.Log.e("p2pRemote", "async failed", e);
                 mainHandler.post(() -> {
-                    if (!acceptsCallback(generation)) return;
                     operationBusy = false;
+                    if (!acceptsCallback(generation)) return;
                     if (e instanceof ForceUpdateRequiredException) {
                         setBusy(false, "");
                         showForceUpdate(((ForceUpdateRequiredException) e).policy);
@@ -1791,6 +1829,29 @@ public final class MainActivity extends Activity {
                     toast(friendly);
                     onAsyncFailed(e);
                 });
+            }
+        });
+    }
+
+    /**
+     * 后台自动触发的刷新（如在线保活连上后同步设备状态）：已有操作在跑时
+     * 静默跳过，不弹「操作正在进行」打断用户。
+     */
+    private <T> void runBackgroundAsync(Task<T> task, Success<T> success) {
+        if (operationBusy) return;
+        operationBusy = true;
+        final int generation = callbackGeneration;
+        executor.execute(() -> {
+            try {
+                T result = task.run();
+                mainHandler.post(() -> {
+                    operationBusy = false;
+                    if (!acceptsCallback(generation)) return;
+                    success.accept(result);
+                });
+            } catch (final Exception e) {
+                android.util.Log.w("p2pRemote", "background async failed", e);
+                mainHandler.post(() -> operationBusy = false);
             }
         });
     }
