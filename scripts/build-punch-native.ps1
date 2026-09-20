@@ -1,10 +1,13 @@
 ﻿param(
     [string]$AndroidSdk = "",
     [string]$NdkVersion = "27.0.12077973",
-    [switch]$NoSccache
+    [switch]$NoSccache # Retained for compatibility; builds always use rustc directly.
 )
 
 $ErrorActionPreference = "Stop"
+
+# Rust 编译缓存根目录（N 盘不可用时改回 D 盘即可，如 "D:\rust-cache"）
+$RustCacheRoot = "N:\rust-cache"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if (-not $AndroidSdk) {
@@ -24,21 +27,16 @@ if (-not $AndroidSdk) {
     }
 }
 $crateDir = Join-Path $repoRoot "punch-native"
+$cargoTargetDirectory = Join-Path $RustCacheRoot "windows"
+$env:CARGO_TARGET_DIR = $cargoTargetDirectory
 $jniRoot = Join-Path $repoRoot "app\src\main\jniLibs"
 $ndkRoot = Join-Path $AndroidSdk "ndk\$NdkVersion"
 $toolBin = Join-Path $ndkRoot "toolchains\llvm\prebuilt\windows-x86_64\bin"
 
 $null = Get-Command cargo -ErrorAction Stop
 $null = Get-Command rustup -ErrorAction Stop
-if ($NoSccache) {
-    $env:RUSTC_WRAPPER = ""
-    Write-Host "sccache disabled; Rust will compile locally"
-}
-else {
-    $null = Get-Command sccache -ErrorAction Stop
-    $env:RUSTC_WRAPPER = "sccache"
-    Write-Host "sccache enabled (use -NoSccache to disable)"
-}
+$env:RUSTC_WRAPPER = ""
+Write-Host "Rust will compile directly"
 if (!(Test-Path $ndkRoot)) {
     throw "Android NDK not found: $ndkRoot"
 }
@@ -64,7 +62,7 @@ try {
         & cargo build --release --target $target.Rust
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed: $($target.Rust)" }
         $destination = Join-Path $jniRoot "$($target.Abi)\libp2premote_punch_jni.so"
-        $source = Join-Path $crateDir "target\$($target.Rust)\release\libp2premote_punch_jni.so"
+        $source = Join-Path $cargoTargetDirectory "$($target.Rust)\release\libp2premote_punch_jni.so"
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw "JNI library was not generated: $source"
         }
@@ -77,6 +75,4 @@ try {
 } finally {
     Pop-Location
 }
-if (-not $NoSccache) { & sccache --show-stats }
-
 Write-Host "built Rust punch JNI libraries under $jniRoot"
