@@ -4,7 +4,7 @@ param(
     [string]$Version,
 
     [Alias('c')]
-    [string]$Configuration = 'Debug',
+    [string]$Configuration = 'Release',
 
     [switch]$Release
 )
@@ -80,10 +80,12 @@ try {
         'Release' { 'app-release.apk' }
     }
     $sourceApk = Join-Path $apkDirectory $sourceApkName
-    $versionedApk = Join-Path $apkDirectory "p2pRemote-$buildVersion.apk"
+    $artifactsDirectory = Join-Path $projectRoot "artifacts"
+    $versionedApk = Join-Path $artifactsDirectory "p2pRemote-$buildVersion.apk"
     if (-not (Test-Path -LiteralPath $sourceApk)) {
         throw "$Configuration APK was not generated: $sourceApk"
     }
+    New-Item -ItemType Directory -Path $artifactsDirectory -Force | Out-Null
     Move-Item -LiteralPath $sourceApk -Destination $versionedApk -Force
     Write-Host "Generated APK: $versionedApk"
 }
