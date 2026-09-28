@@ -1083,6 +1083,8 @@ public final class WgvpnService extends VpnService {
                             true,
                             tunnelResult.getLocalNATType(),
                             tunnelResult.getRemoteNATType(),
+                            traversal != null ? traversal.traversalPlan() : "",
+                            traversal != null ? traversal.traversalSelection() : "",
                             "",
                             ""
                     );
@@ -1117,14 +1119,19 @@ public final class WgvpnService extends VpnService {
                     }
                     cleanupNative();
                     scheduleSupersededAttemptCleanup(
-                            opened, targetItem, attemptWs, activeAttemptId, attemptStarted);
+                            opened, targetItem, attemptWs, activeAttemptId, attemptStarted,
+                            traversal != null ? traversal.traversalPlan() : "",
+                            traversal != null ? traversal.traversalSelection() : "");
                     Log.i(TAG, "discarded superseded tunnel start: generation=" + expectedGeneration);
                     return;
                 }
                 // 失败上报（p2p/open 已成功拿到 connection_id 才有意义上报 end）
                 if (opened != null) {
                     try {
-                        apiClient.reportP2PEnd(opened, targetItem, false, errorCode, msg);
+                        apiClient.reportP2PEnd(opened, targetItem, false, "unknown", "unknown",
+                                traversal != null ? traversal.traversalPlan() : "",
+                                traversal != null ? traversal.traversalSelection() : "",
+                                errorCode, msg);
                     } catch (Exception reportError) {
                         Log.w(TAG, "p2p/end 失败上报异常: " + reportError.getMessage());
                     }
@@ -1170,7 +1177,8 @@ public final class WgvpnService extends VpnService {
      */
     private void scheduleSupersededAttemptCleanup(ApiClient.OpenResult opened, DeviceItem target,
                                                   WsConnection ws, String attemptId,
-                                                  boolean attemptStarted) {
+                                                  boolean attemptStarted,
+                                                  String traversalPlan, String traversalSelection) {
         if (opened == null) {
             return;
         }
@@ -1180,8 +1188,9 @@ public final class WgvpnService extends VpnService {
                     sendAttemptCancel(ws, opened, target.id, attemptId, "network_changed");
                 }
                 try {
-                    apiClient.reportP2PEnd(
-                            opened, target, false, "network_changed", "网络变化，旧建链已取消");
+                    apiClient.reportP2PEnd(opened, target, false, "unknown", "unknown",
+                            traversalPlan, traversalSelection,
+                            "network_changed", "网络变化，旧建链已取消");
                 } catch (Exception e) {
                     Log.w(TAG, "superseded p2p/end cleanup failed: " + e.getMessage());
                 }

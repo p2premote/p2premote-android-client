@@ -22,6 +22,9 @@ final class TraversalClient implements AutoCloseable {
     private final ArrayBlockingQueue<JSONObject> inbox = new ArrayBlockingQueue<>(64);
     private volatile JSONObject ready;
     private volatile String signalError;
+    // p2p/end 上报用：主动端发出的提议与被动端响应确认的选择（逗号连接，空=未走新协商）。
+    private volatile String proposedNetworks = "";
+    private volatile String acknowledgedNetworks = "";
 
     TraversalClient(WsConnection ws, ApiClient.OpenResult opened, long peer, String attempt,
                     ConnectionPreferences preferences, java.util.function.Supplier<Boolean> ipv6Availability, Check check) {
@@ -131,9 +134,16 @@ final class TraversalClient implements AutoCloseable {
         List<String> plan = TraversalPolicy.plan(preferences.ipv6, preferences.tcp, evidence(bounded), evidence(remote),
                 remoteGate ? ipv6 : null, remoteGate ? remoteIpv6 : null);
         DiagLog.i(TAG, "traversal plan proposed: " + plan);
+        proposedNetworks = String.join(",", plan);
         send(frame("plan", 0).put("networks", new JSONArray(plan)));
         JSONArray accepted = waitFrame(0, "plan_ack").getJSONArray("networks");
         DiagLog.i(TAG, "traversal plan selection acknowledged by peer: " + accepted);
+        StringBuilder acknowledged = new StringBuilder();
+        for (int i = 0; i < accepted.length(); i++) {
+            if (i > 0) acknowledged.append(',');
+            acknowledged.append(accepted.getString(i));
+        }
+        acknowledgedNetworks = acknowledged.toString();
         if (accepted.length() != plan.size()) throw new IllegalStateException("traversal_plan_mismatch");
         for (int i = 0; i < plan.size(); i++) if (!plan.get(i).equals(accepted.getString(i))) throw new IllegalStateException("traversal_plan_mismatch");
         List<String> rounds = new ArrayList<>();
@@ -168,4 +178,6 @@ final class TraversalClient implements AutoCloseable {
         throw new IllegalStateException("punch_exhausted:" + String.join(",", attemptedNetworks));
     }
     @Override public void close() { ws.clearTraversalListener(attempt); }
+    String traversalPlan() { return proposedNetworks; }
+    String traversalSelection() { return acknowledgedNetworks; }
 }
