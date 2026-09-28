@@ -140,7 +140,7 @@ final class TraversalClient implements AutoCloseable {
             check.run();
             int round = i + 1;
             String network = rounds.get(i), mode = i == 0 ? "lan" : "internet";
-            int seconds = i == 0 ? 6 : (network.startsWith("tcp") ? 10 : 30);
+            int seconds = i == 0 ? 6 : 30;
             String token = UUID.randomUUID().toString();
             send(frame("prepare", round).put("network", network).put("mode", mode).put("token", token).put("timeout_secs", seconds));
             waitFrame(round, "ready");
