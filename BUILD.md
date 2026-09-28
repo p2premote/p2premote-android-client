@@ -7,7 +7,7 @@ Android 客户端统一使用 `-v` 传入版本号，格式为三段式 SemVer�
 - Windows PowerShell
 - Android SDK（compileSdk 35）
 - Android SDK Build Tools、Platform Tools 和 NDK
-- Java/Gradle 环境；项目使用 Gradle Wrapper 8.5
+- JDK 17+（Android Gradle Plugin 8.x 要求；Gradle 从 `JAVA_HOME` / `PATH` 解析）；项目使用 Gradle Wrapper 8.5
 - PowerShell 可执行项目中的 native 构建脚本
 
 编译前必须显式设置 `ANDROID_HOME`，脚本不会猜测或回退到其他 SDK 路径：
