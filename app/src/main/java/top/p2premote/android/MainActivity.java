@@ -1498,7 +1498,7 @@ public final class MainActivity extends Activity {
         settings.addView(helpText("两端设备均有 IPv6 地址时建议开启，有助于提升直连链路稳定性。"));
         settings.addView(spacer(14));
         settings.addView(tcp);
-        settings.addView(helpText("两端处于同城或同运营商时可尝试开启，有机会提升上传速率和链路稳定性，但打洞成功率可能低于 UDP。仅在至少一端满足 easy NAT 条件时尝试 TCP。"));
+        settings.addView(helpText("运营商限制 UDP 上传速率时可尝试开启，优先使用公网 TCP 打洞；成功率可能低于 UDP。仅在至少一端满足 easy NAT 条件时尝试 TCP，失败后回退 UDP。局域网始终使用 UDP4。"));
         android.widget.CompoundButton.OnCheckedChangeListener save = (button, checked) -> {
             if (!new ConnectionPreferences(ipv6.isChecked(), tcp.isChecked()).save(this)) {
                 toast("保存连接设置失败");

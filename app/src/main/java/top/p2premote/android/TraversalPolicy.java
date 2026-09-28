@@ -16,10 +16,15 @@ final class TraversalPolicy {
                 : (ipv6 ? new String[]{"udp6", "udp4", "tcp6", "tcp4"} : new String[]{"udp4", "udp6", "tcp4", "tcp6"});
         List<String> result = new ArrayList<>();
         for (String network : order) {
+            // UDP support does not depend on successful preliminary STUN.
+            if (network.equals("udp4") || network.equals("udp6")) {
+                result.add(network);
+                continue;
+            }
             boolean left = false, right = false, easy = false;
             for (Evidence e : local) if (valid(e, network)) { left = true; easy |= "easy".equals(e.natType); }
             for (Evidence e : remote) if (valid(e, network)) { right = true; easy |= "easy".equals(e.natType); }
-            if (left && right && (network.startsWith("udp") || easy)) result.add(network);
+            if (left && right && easy) result.add(network);
         }
         return result;
     }

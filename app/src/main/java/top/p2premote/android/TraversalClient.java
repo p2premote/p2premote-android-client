@@ -119,7 +119,7 @@ final class TraversalClient implements AutoCloseable {
         if (accepted.length() != plan.size()) throw new IllegalStateException("traversal_plan_mismatch");
         for (int i = 0; i < plan.size(); i++) if (!plan.get(i).equals(accepted.getString(i))) throw new IllegalStateException("traversal_plan_mismatch");
         List<String> rounds = new ArrayList<>();
-        rounds.add(preferences.tcp ? "tcp4" : "udp4"); rounds.addAll(plan);
+        rounds.add("udp4"); rounds.addAll(plan);
         for (int i = 0; i < rounds.size(); i++) {
             check.run();
             int round = i + 1;
