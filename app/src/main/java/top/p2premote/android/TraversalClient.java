@@ -17,14 +17,16 @@ final class TraversalClient implements AutoCloseable {
     private final String attempt;
     private final ConnectionPreferences preferences;
     private final Check check;
+    private final java.util.function.Supplier<Boolean> ipv6Availability;
     private final ArrayBlockingQueue<JSONObject> inbox = new ArrayBlockingQueue<>(64);
     private volatile JSONObject ready;
     private volatile String signalError;
 
     TraversalClient(WsConnection ws, ApiClient.OpenResult opened, long peer, String attempt,
-                    ConnectionPreferences preferences, Check check) {
+                    ConnectionPreferences preferences, java.util.function.Supplier<Boolean> ipv6Availability, Check check) {
         this.ws = ws; this.opened = opened; this.peer = peer; this.attempt = attempt;
         this.preferences = preferences; this.check = check;
+        this.ipv6Availability = ipv6Availability;
         ws.setTraversalListener(opened.connectionId, peer, attempt, this::receive);
     }
     JSONObject negotiation() throws Exception {
@@ -111,14 +113,28 @@ final class TraversalClient implements AutoCloseable {
         // Limit duplicates from multi-interface native detection.
         JSONArray bounded = new JSONArray();
         for (int i = 0; i < Math.min(local.length(), 32); i++) bounded.put(local.getJSONObject(i));
-        send(frame("capabilities", 0).put("evidence", bounded));
-        JSONArray remote = waitFrame(0, "capabilities").getJSONArray("evidence");
-        List<String> plan = TraversalPolicy.plan(preferences.ipv6, preferences.tcp, evidence(bounded), evidence(remote));
+        Boolean ipv6 = ipv6Availability.get();
+        JSONObject capabilities = frame("capabilities", 0).put("evidence", bounded).put("ipv6_gate_supported", true);
+        if (ipv6 != null) capabilities.put("ipv6_available", ipv6);
+        send(capabilities);
+        JSONObject remoteCapabilities = waitFrame(0, "capabilities");
+        JSONArray remote = remoteCapabilities.getJSONArray("evidence");
+        Object remoteValue = remoteCapabilities.opt("ipv6_available");
+        if (remoteValue != null && remoteValue != JSONObject.NULL && !(remoteValue instanceof Boolean)) {
+            throw new IllegalStateException("invalid_traversal_capabilities");
+        }
+        Boolean remoteIpv6 = remoteValue instanceof Boolean ? (Boolean) remoteValue : null;
+        Object gateValue = remoteCapabilities.opt("ipv6_gate_supported");
+        if (gateValue != null && !(gateValue instanceof Boolean)) throw new IllegalStateException("invalid_traversal_capabilities");
+        boolean remoteGate = Boolean.TRUE.equals(gateValue);
+        List<String> plan = TraversalPolicy.plan(preferences.ipv6, preferences.tcp, evidence(bounded), evidence(remote),
+                remoteGate ? ipv6 : null, remoteGate ? remoteIpv6 : null);
         send(frame("plan", 0).put("networks", new JSONArray(plan)));
         JSONArray accepted = waitFrame(0, "plan_ack").getJSONArray("networks");
         if (accepted.length() != plan.size()) throw new IllegalStateException("traversal_plan_mismatch");
         for (int i = 0; i < plan.size(); i++) if (!plan.get(i).equals(accepted.getString(i))) throw new IllegalStateException("traversal_plan_mismatch");
         List<String> rounds = new ArrayList<>();
+        List<String> attemptedNetworks = new ArrayList<>();
         rounds.add("udp4"); rounds.addAll(plan);
         for (int i = 0; i < rounds.size(); i++) {
             check.run();
@@ -130,20 +146,23 @@ final class TraversalClient implements AutoCloseable {
             waitFrame(round, "ready");
             JSONObject request = new JSONObject(template.toString()).put("network", network).put("traversal_mode", mode)
                     .put("token", token).put("timeout_secs", seconds);
-            PunchNative.TunnelResult owned = PunchNative.startUdpTunnel(request.toString());
+            boolean skipIpv6 = network.endsWith("6") && Boolean.FALSE.equals(ipv6);
+            if ("internet".equals(mode) && !skipIpv6) attemptedNetworks.add(network);
+            PunchNative.TunnelResult owned = skipIpv6 ? null : PunchNative.startUdpTunnel(request.toString());
             boolean transferred = false;
             try {
                 check.run();
-                send(frame("result", round).put("ok", owned.getOK()));
-                boolean success = waitFrame(round, "result", seconds * 1000L + 12_000).getBoolean("ok") && owned.getOK();
+                boolean localOk = owned != null && owned.getOK();
+                send(frame("result", round).put("ok", localOk));
+                boolean success = waitFrame(round, "result", seconds * 1000L + 12_000).getBoolean("ok") && localOk;
                 send(frame(success ? "commit" : "close", round));
                 waitFrame(round, success ? "committed" : "closed");
                 if (success) { transferred = true; return owned; }
             } finally {
-                if (!transferred && owned.getOK()) PunchNative.stopUdpTunnel(owned.getHandleID());
+                if (!transferred && owned != null && owned.getOK()) PunchNative.stopUdpTunnel(owned.getHandleID());
             }
         }
-        throw new IllegalStateException("punch_exhausted");
+        throw new IllegalStateException("punch_exhausted:" + String.join(",", attemptedNetworks));
     }
     @Override public void close() { ws.clearTraversalListener(attempt); }
 }

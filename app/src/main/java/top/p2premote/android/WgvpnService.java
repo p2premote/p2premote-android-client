@@ -490,6 +490,22 @@ public final class WgvpnService extends VpnService {
         return state != null && state.usable ? state.network : null;
     }
 
+    private Boolean underlyingIpv6Available() {
+        try {
+            Network network = currentUnderlyingNetwork();
+            if (network == null || connectivityManager == null) return null;
+            android.net.LinkProperties links = connectivityManager.getLinkProperties(network);
+            if (links == null) return null;
+            for (android.net.LinkAddress address : links.getLinkAddresses()) {
+                if (address.getAddress() instanceof java.net.Inet6Address
+                        && TraversalPolicy.usableIpv6(address.getAddress().getAddress())) return true;
+            }
+            return false;
+        } catch (RuntimeException error) {
+            return null;
+        }
+    }
+
     /** protect 负责绕过 VPN，bindSocket 负责确保 gonc 外层 UDP 真正走状态机选中的物理网络。 */
     private boolean protectAndBindSocket(int fd) {
         if (!protect(fd)) {
@@ -776,7 +792,7 @@ public final class WgvpnService extends VpnService {
                 WsConnection ws = WsConnection.get(this);
                 attemptWs = ws;
                 traversal = new TraversalClient(ws, opened, targetDeviceId, attemptId,
-                        connectionPreferences, () -> ensureStartGeneration(expectedGeneration));
+                        connectionPreferences, this::underlyingIpv6Available, () -> ensureStartGeneration(expectedGeneration));
                 if (!ws.isConnected()) {
                     throw new IllegalStateException("WebSocket 未连接，无法发送打洞信令");
                 }
@@ -1118,7 +1134,7 @@ public final class WgvpnService extends VpnService {
                     handleAutomaticRecoveryFailure(expectedGeneration, e);
                     return;
                 }
-                tcpRetryRecommended = connectionPreferences.tcp && msg.contains("punch_exhausted");
+                tcpRetryRecommended = TraversalPolicy.tcpRetryRecommended(connectionPreferences.tcp, msg);
                 if (tcpRetryRecommended) msg += "\n已开启 TCP 优先，建议关闭后重试。";
                 emit(TunnelState.FAILED, msg, "", "", "");
                 // stopForeground(false)：退下前台服务，但保留 FAILED 通知，让用户看到真实失败原因。

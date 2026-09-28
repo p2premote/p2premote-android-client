@@ -32,4 +32,32 @@ public class TraversalPolicyTest {
         assertEquals(Arrays.asList("tcp4", "tcp6", "udp4", "udp6"), TraversalPolicy.plan(false, true, all, all));
         assertEquals(Arrays.asList("tcp6", "tcp4", "udp6", "udp4"), TraversalPolicy.plan(true, true, all, all));
     }
+    @Test public void eitherSideWithoutIpv6ExcludesBothIpv6Transports() {
+        List<TraversalPolicy.Evidence> all = Arrays.asList(nat("udp4", "easy"), nat("udp6", "easy"), nat("tcp4", "easy"), nat("tcp6", "easy"));
+        for (boolean ipv6 : new boolean[]{false, true}) for (boolean tcp : new boolean[]{false, true}) {
+            for (Boolean other : new Boolean[]{null, false, true}) {
+                for (List<String> plan : Arrays.asList(
+                        TraversalPolicy.plan(ipv6, tcp, all, all, false, other),
+                        TraversalPolicy.plan(ipv6, tcp, all, all, other, false))) {
+                    assertFalse(plan.contains("tcp6")); assertFalse(plan.contains("udp6"));
+                    assertTrue(plan.contains("tcp4")); assertTrue(plan.contains("udp4"));
+                }
+            }
+        }
+        assertEquals(Arrays.asList("udp6", "udp4"), TraversalPolicy.plan(true, true, Collections.emptyList(), Collections.emptyList(), null, true));
+    }
+    @Test public void hintRequiresActualPublicTcpExecution() {
+        for (String error : Arrays.asList("punch_exhausted", "punch_exhausted:", "punch_exhausted:udp4,udp6", "traversal_signal_timeout", "peer_cancelled")) {
+            assertFalse(TraversalPolicy.tcpRetryRecommended(true, error));
+        }
+        assertTrue(TraversalPolicy.tcpRetryRecommended(true, "punch_exhausted:tcp4,udp4,udp6"));
+        assertTrue(TraversalPolicy.tcpRetryRecommended(true, "punch_exhausted:tcp6,udp6,udp4"));
+        assertFalse(TraversalPolicy.tcpRetryRecommended(false, "punch_exhausted:tcp4,udp4"));
+    }
+    @Test public void localIpv6AddressesAreNotPublicCapabilities() throws Exception {
+        for (String address : Arrays.asList("::", "::1", "fe80::1", "fd00::1", "ff02::1", "2001:db8::1")) {
+            assertFalse(TraversalPolicy.usableIpv6(java.net.InetAddress.getByName(address).getAddress()));
+        }
+        assertTrue(TraversalPolicy.usableIpv6(java.net.InetAddress.getByName("2001:4860:4860::8888").getAddress()));
+    }
 }
