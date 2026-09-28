@@ -736,6 +736,8 @@ public final class WgvpnService extends VpnService {
             String activeAttemptId = null;
             boolean attemptStarted = false;
             TraversalClient traversal = null;
+            // p2p/end 任务耗时：单调时钟，从任务开始到最终结果（成功/失败/取消）。
+            final long startedAtMs = android.os.SystemClock.elapsedRealtime();
             ConnectionPreferences connectionPreferences = ConnectionPreferences.load(this);
             DeviceItem targetItem = new DeviceItem(targetDeviceId, targetName, "", "",
                     targetDeviceUuid, "online", "", "", 3389);
@@ -1085,6 +1087,8 @@ public final class WgvpnService extends VpnService {
                             tunnelResult.getRemoteNATType(),
                             traversal != null ? traversal.traversalPlan() : "",
                             traversal != null ? traversal.traversalSelection() : "",
+                            tunnelResult.getNetwork(),
+                            (android.os.SystemClock.elapsedRealtime() - startedAtMs) / 1000,
                             "",
                             ""
                     );
@@ -1120,17 +1124,25 @@ public final class WgvpnService extends VpnService {
                     cleanupNative();
                     scheduleSupersededAttemptCleanup(
                             opened, targetItem, attemptWs, activeAttemptId, attemptStarted,
+                            traversal != null ? traversal.localNatType() : "",
+                            traversal != null ? traversal.remoteNatType() : "",
                             traversal != null ? traversal.traversalPlan() : "",
-                            traversal != null ? traversal.traversalSelection() : "");
+                            traversal != null ? traversal.traversalSelection() : "",
+                            traversal != null ? traversal.selectedNetwork() : "",
+                            (android.os.SystemClock.elapsedRealtime() - startedAtMs) / 1000);
                     Log.i(TAG, "discarded superseded tunnel start: generation=" + expectedGeneration);
                     return;
                 }
                 // 失败上报（p2p/open 已成功拿到 connection_id 才有意义上报 end）
                 if (opened != null) {
                     try {
-                        apiClient.reportP2PEnd(opened, targetItem, false, "unknown", "unknown",
+                        apiClient.reportP2PEnd(opened, targetItem, false,
+                                traversal != null ? traversal.localNatType() : "",
+                                traversal != null ? traversal.remoteNatType() : "",
                                 traversal != null ? traversal.traversalPlan() : "",
                                 traversal != null ? traversal.traversalSelection() : "",
+                                traversal != null ? traversal.selectedNetwork() : "",
+                                (android.os.SystemClock.elapsedRealtime() - startedAtMs) / 1000,
                                 errorCode, msg);
                     } catch (Exception reportError) {
                         Log.w(TAG, "p2p/end 失败上报异常: " + reportError.getMessage());
@@ -1178,7 +1190,9 @@ public final class WgvpnService extends VpnService {
     private void scheduleSupersededAttemptCleanup(ApiClient.OpenResult opened, DeviceItem target,
                                                   WsConnection ws, String attemptId,
                                                   boolean attemptStarted,
-                                                  String traversalPlan, String traversalSelection) {
+                                                  String localNatType, String remoteNatType,
+                                                  String traversalPlan, String traversalSelection,
+                                                  String selectedNetwork, long durationSeconds) {
         if (opened == null) {
             return;
         }
@@ -1188,8 +1202,8 @@ public final class WgvpnService extends VpnService {
                     sendAttemptCancel(ws, opened, target.id, attemptId, "network_changed");
                 }
                 try {
-                    apiClient.reportP2PEnd(opened, target, false, "unknown", "unknown",
-                            traversalPlan, traversalSelection,
+                    apiClient.reportP2PEnd(opened, target, false, localNatType, remoteNatType,
+                            traversalPlan, traversalSelection, selectedNetwork, durationSeconds,
                             "network_changed", "网络变化，旧建链已取消");
                 } catch (Exception e) {
                     Log.w(TAG, "superseded p2p/end cleanup failed: " + e.getMessage());

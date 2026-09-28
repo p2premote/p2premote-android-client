@@ -48,4 +48,12 @@ final class TraversalPolicy {
     private static boolean valid(Evidence e, String network) {
         return network.equals(e.network) && ("easy".equals(e.natType) || "hard".equals(e.natType) || "symm".equals(e.natType));
     }
+
+    /** Preliminary udp4 NAT classification used as the report fallback. */
+    static String udp4NatType(List<Evidence> evidence) {
+        for (Evidence e : evidence) {
+            if (valid(e, "udp4")) return e.natType;
+        }
+        return "";
+    }
 }

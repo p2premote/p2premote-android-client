@@ -60,4 +60,10 @@ public class TraversalPolicyTest {
         }
         assertTrue(TraversalPolicy.usableIpv6(java.net.InetAddress.getByName("2001:4860:4860::8888").getAddress()));
     }
+    @Test public void udp4NatExtractionSkipsInvalidTypes() {
+        assertEquals("easy", TraversalPolicy.udp4NatType(Arrays.asList(nat("udp4", "easy"))));
+        assertEquals("symm", TraversalPolicy.udp4NatType(Arrays.asList(nat("udp6", "easy"), nat("udp4", "symm"))));
+        assertEquals("", TraversalPolicy.udp4NatType(Arrays.asList(nat("udp4", "unknown"))));
+        assertEquals("", TraversalPolicy.udp4NatType(Collections.<TraversalPolicy.Evidence>emptyList()));
+    }
 }

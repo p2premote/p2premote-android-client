@@ -190,12 +190,13 @@ final class ApiClient {
 
     void reportP2PEnd(OpenResult opened, DeviceItem target, boolean success,
                       String errorCode, String errorMessage) throws Exception {
-        reportP2PEnd(opened, target, success, "unknown", "unknown", "", "", errorCode, errorMessage);
+        reportP2PEnd(opened, target, success, "unknown", "unknown", "", "", "", 0, errorCode, errorMessage);
     }
 
     void reportP2PEnd(OpenResult opened, DeviceItem target, boolean success,
                       String sourceNatType, String targetNatType,
                       String traversalPlan, String traversalSelection,
+                      String selectedNetwork, long durationSeconds,
                       String errorCode, String errorMessage) throws Exception {
         Session session = sessionStore.require();
         JSONObject req = new JSONObject();
@@ -209,6 +210,9 @@ final class ApiClient {
         // 打洞协商结果（逗号连接的网络列表，空=旧版对端未走新协商），对齐桌面上报字段。
         req.put("traversal_plan", traversalPlan == null ? "" : traversalPlan);
         req.put("traversal_selection", traversalSelection == null ? "" : traversalSelection);
+        // 实际网络（成功=选定网络，失败=最后一次调用网络）与任务耗时（秒，单调时钟）。
+        req.put("selected_network", selectedNetwork == null ? "" : selectedNetwork);
+        req.put("duration_seconds", durationSeconds);
         // 字段名必须为 error_message（对齐服务端 json tag），历史误用 error_msg 导致上报丢失。
         req.put("error_message", errorMessage == null ? "" : errorMessage);
         // 结构化错误码（≤64 字符，可选），对齐桌面 classify_tunnel_error_code 白名单。

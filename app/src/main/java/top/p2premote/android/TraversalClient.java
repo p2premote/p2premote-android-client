@@ -25,6 +25,10 @@ final class TraversalClient implements AutoCloseable {
     // p2p/end 上报用：主动端发出的提议与被动端响应确认的选择（逗号连接，空=未走新协商）。
     private volatile String proposedNetworks = "";
     private volatile String acknowledgedNetworks = "";
+    // NAT 先记协商证据（udp4 预探测），轮次失败诊断到达后按字段覆盖；lastNetwork 记最后一次实际调用。
+    private volatile String localNatType = "";
+    private volatile String remoteNatType = "";
+    private volatile String lastNetwork = "";
 
     TraversalClient(WsConnection ws, ApiClient.OpenResult opened, long peer, String attempt,
                     ConnectionPreferences preferences, java.util.function.Supplier<Boolean> ipv6Availability, Check check) {
@@ -131,7 +135,11 @@ final class TraversalClient implements AutoCloseable {
         Object gateValue = remoteCapabilities.opt("ipv6_gate_supported");
         if (gateValue != null && !(gateValue instanceof Boolean)) throw new IllegalStateException("invalid_traversal_capabilities");
         boolean remoteGate = Boolean.TRUE.equals(gateValue);
-        List<String> plan = TraversalPolicy.plan(preferences.ipv6, preferences.tcp, evidence(bounded), evidence(remote),
+        List<TraversalPolicy.Evidence> localEvidence = evidence(bounded);
+        List<TraversalPolicy.Evidence> remoteEvidence = evidence(remote);
+        localNatType = TraversalPolicy.udp4NatType(localEvidence);
+        remoteNatType = TraversalPolicy.udp4NatType(remoteEvidence);
+        List<String> plan = TraversalPolicy.plan(preferences.ipv6, preferences.tcp, localEvidence, remoteEvidence,
                 remoteGate ? ipv6 : null, remoteGate ? remoteIpv6 : null);
         DiagLog.i(TAG, "traversal plan proposed: " + plan);
         proposedNetworks = String.join(",", plan);
@@ -162,6 +170,11 @@ final class TraversalClient implements AutoCloseable {
             boolean skipIpv6 = network.endsWith("6") && Boolean.FALSE.equals(ipv6);
             if ("internet".equals(mode) && !skipIpv6) attemptedNetworks.add(network);
             PunchNative.TunnelResult owned = skipIpv6 ? null : PunchNative.startUdpTunnel(request.toString());
+            if (owned != null && !owned.getOK()) {
+                if (!owned.getLocalNATType().isEmpty()) localNatType = owned.getLocalNATType();
+                if (!owned.getRemoteNATType().isEmpty()) remoteNatType = owned.getRemoteNATType();
+                if (!owned.getNetwork().isEmpty()) lastNetwork = owned.getNetwork();
+            }
             boolean transferred = false;
             try {
                 check.run();
@@ -180,4 +193,12 @@ final class TraversalClient implements AutoCloseable {
     @Override public void close() { ws.clearTraversalListener(attempt); }
     String traversalPlan() { return proposedNetworks; }
     String traversalSelection() { return acknowledgedNetworks; }
+    String localNatType() { return localNatType; }
+    String remoteNatType() { return remoteNatType; }
+    /** 最后一次实际调用的网络；没有调用记录时回退计划首选网络。 */
+    String selectedNetwork() {
+        if (!lastNetwork.isEmpty()) return lastNetwork;
+        int comma = proposedNetworks.indexOf(',');
+        return comma > 0 ? proposedNetworks.substring(0, comma) : proposedNetworks;
+    }
 }
