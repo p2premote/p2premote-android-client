@@ -1133,7 +1133,7 @@ public final class MainActivity extends Activity {
             if (!exposedLan.isEmpty()) {
                 wrap.addView(helpText("可访问网段：" + exposedLan));
             }
-            if (!selectedNetwork.isEmpty()) wrap.addView(helpText("连接方式：" + selectedNetwork.toUpperCase(java.util.Locale.ROOT)));
+            if (!selectedNetwork.isEmpty()) wrap.addView(helpText("隧道传输协议：" + selectedNetwork.toUpperCase(java.util.Locale.ROOT)));
         } else if (!currentTunnelMessage.isEmpty()
                 && (TunnelState.FAILED.equals(currentTunnelState)
                 || TunnelState.ABORTED.equals(currentTunnelState)
