@@ -79,6 +79,8 @@ public final class WgvpnService extends VpnService {
     static final String EXTRA_DEVICE_NAME = "device_name";
     static final String EXTRA_STATE = "state";
     static final String EXTRA_MESSAGE = "message";
+    static final String EXTRA_TCP_RETRY = "tcp_retry_recommended";
+    static final String EXTRA_NETWORK = "network";
     static final String EXTRA_VIRTUAL_IP = "virtual_ip";
     static final String EXTRA_PEER_VIRTUAL_IP = "peer_virtual_ip";
     static final String EXTRA_EXPOSED_LAN = "exposed_lan";
@@ -162,6 +164,8 @@ public final class WgvpnService extends VpnService {
     // 当前隧道状态
     private volatile String activeState = TunnelState.IDLE;
     private volatile String activeMessage = "";
+    private volatile boolean tcpRetryRecommended;
+    private volatile String selectedNetwork = "";
     private volatile String myVirtualIp = "";
     private volatile String peerVirtualIp = "";
     private volatile String exposedLan = "";
@@ -715,9 +719,13 @@ public final class WgvpnService extends VpnService {
             WsConnection attemptWs = null;
             String activeAttemptId = null;
             boolean attemptStarted = false;
+            TraversalClient traversal = null;
+            ConnectionPreferences connectionPreferences = ConnectionPreferences.load(this);
             DeviceItem targetItem = new DeviceItem(targetDeviceId, targetName, "", "",
                     targetDeviceUuid, "online", "", "", 3389);
             try {
+                tcpRetryRecommended = false;
+                selectedNetwork = "";
                 DiagLog.i(TAG, "==== connect session start target=" + targetName + "(" + targetDeviceId + ")"
                         + (automaticRecovery ? " mode=auto-recovery" : ""));
                 Session session = sessionStore.require();
@@ -761,13 +769,14 @@ public final class WgvpnService extends VpnService {
                 String punchToken = ApiClient.buildPunchToken(session.deviceId, targetDeviceId);
                 String attemptId = ApiClient.buildAttemptId(targetDeviceId, 1);
                 activeAttemptId = attemptId;
-                Log.i(TAG, "generated punch_token=" + punchToken + " attempt_id=" + attemptId);
-                DiagLog.i(TAG, "punch_token=" + punchToken + " attempt_id=" + attemptId);
+                Log.i(TAG, "generated attempt_id=" + attemptId);
 
                 // 步骤 4: 通过 WS 发 p2p_notify(attempt_start) 给被动端，等服务端 ack
                 emit(TunnelState.EXCHANGING, "正在通知对端准备隧道", "", "", "");
                 WsConnection ws = WsConnection.get(this);
                 attemptWs = ws;
+                traversal = new TraversalClient(ws, opened, targetDeviceId, attemptId,
+                        connectionPreferences, () -> ensureStartGeneration(expectedGeneration));
                 if (!ws.isConnected()) {
                     throw new IllegalStateException("WebSocket 未连接，无法发送打洞信令");
                 }
@@ -824,6 +833,7 @@ public final class WgvpnService extends VpnService {
                 attemptData.put("source_email", opened.sourceEmail);
                 attemptData.put("source_device_name", DeviceIdentity.deviceName());
                 attemptData.put("source_device_alias", "");
+                attemptData.put("traversal_negotiation", traversal.negotiation());
 
                 String notifyMessageId = ApiClient.buildMessageId();
                 boolean acked = ws.sendNotifyWaitAck(
@@ -849,6 +859,7 @@ public final class WgvpnService extends VpnService {
                 if (!"attempt_ready".equals(readyResult[0])) {
                     throw new IllegalStateException("对端准备失败：" + readyResult[1]);
                 }
+                traversal.negotiated(); // Explicit malformed versions must fail before key exchange.
                 Log.i(TAG, "attempt_ready received: rdp_port=" + readyRdpPort[0] + ", starting gonc exchange");
                 DiagLog.i(TAG, "attempt_ready rdp_port=" + readyRdpPort[0]);
 
@@ -877,7 +888,7 @@ public final class WgvpnService extends VpnService {
 
                 ExchangeResult exResult = PunchNative.exchange(
                         punchToken, sendPayload.toString(), "active", 0, EXCHANGE_TIMEOUT_SEC);
-                DiagLog.i(TAG, "exchange token=" + punchToken + " timeout=" + EXCHANGE_TIMEOUT_SEC
+                DiagLog.i(TAG, "exchange timeout=" + EXCHANGE_TIMEOUT_SEC
                         + " -> ok=" + exResult.getOK() + " error=" + exResult.getError()
                         + " recv=" + exResult.getRecvData());
                 ensureStartGeneration(expectedGeneration);
@@ -925,7 +936,7 @@ public final class WgvpnService extends VpnService {
                 tunnelReq.put("remote_target_port", WG_LISTEN_PORT);
                 tunnelReq.put("allow_relay", false);
 
-                TunnelResult tunnelResult = PunchNative.startUdpTunnel(tunnelReq.toString());
+                TunnelResult tunnelResult = traversal.start(tunnelReq);
                 DiagLog.i(TAG, "tunnel ok=" + tunnelResult.getOK()
                         + " traversal=" + tunnelResult.getSelectedTraversal()
                         + " transport=" + tunnelResult.getTransportMode()
@@ -936,6 +947,7 @@ public final class WgvpnService extends VpnService {
                     throw new IllegalStateException("P2P 打洞失败：" + tunnelResult.getError());
                 }
                 goncHandleId = tunnelResult.getHandleID();
+                selectedNetwork = tunnelResult.getNetwork();
                 ensureStartGeneration(expectedGeneration);
                 int localForwardPort = (int) tunnelResult.getLocalForwardPort();
                 if (localForwardPort <= 0) {
@@ -1069,7 +1081,7 @@ public final class WgvpnService extends VpnService {
                 DiagLog.i(TAG, "CONNECTED myIp=" + myVirtualIp + " peerIp=" + peerVirtualIp);
                 networkRecovery.markConnected(expectedGeneration);
                 automaticRecoveryInProgress = false;
-                emit(TunnelState.CONNECTED, "隧道已建立", myVirtualIp, peerVirtualIp, exposedLan);
+                emit(TunnelState.CONNECTED, "隧道已建立 · " + selectedNetwork.toUpperCase(java.util.Locale.ROOT), myVirtualIp, peerVirtualIp, exposedLan);
                 acquireTunnelWakeLock();
                 startTrafficPolling();
                 startHealthClient();
@@ -1106,6 +1118,8 @@ public final class WgvpnService extends VpnService {
                     handleAutomaticRecoveryFailure(expectedGeneration, e);
                     return;
                 }
+                tcpRetryRecommended = connectionPreferences.tcp && msg.contains("punch_exhausted");
+                if (tcpRetryRecommended) msg += "\n已开启 TCP 优先，建议关闭后重试。";
                 emit(TunnelState.FAILED, msg, "", "", "");
                 // stopForeground(false)：退下前台服务，但保留 FAILED 通知，让用户看到真实失败原因。
                 // （此前传 true 会移除通知，随后 onDestroy 又 emit(STOPPED) 覆盖成「服务已停止」，
@@ -1114,6 +1128,7 @@ public final class WgvpnService extends VpnService {
                 stopForeground(false);
                 stopSelf();
             } finally {
+                if (traversal != null) traversal.close();
                 if (!automaticRecovery) {
                     manualStartQueued.set(false);
                 }
@@ -1927,6 +1942,8 @@ public final class WgvpnService extends VpnService {
         update.setPackage(getPackageName());
         update.putExtra(EXTRA_STATE, state);
         update.putExtra(EXTRA_MESSAGE, message);
+        update.putExtra(EXTRA_TCP_RETRY, tcpRetryRecommended);
+        update.putExtra(EXTRA_NETWORK, selectedNetwork);
         update.putExtra(EXTRA_VIRTUAL_IP, myVirtualIp);
         update.putExtra(EXTRA_PEER_VIRTUAL_IP, peerVirtualIp);
         update.putExtra(EXTRA_EXPOSED_LAN, exposedLan);

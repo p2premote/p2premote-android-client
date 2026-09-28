@@ -29,6 +29,7 @@ public final class PunchNative {
             String token, String sendData, String roleHint, int exmode, int timeoutSecs);
 
     static native String nativeStartUdpTunnel(String requestJson);
+    static native String nativeDetectNat();
 
     static native boolean nativeStopUdpTunnel(String handleId);
 
@@ -70,6 +71,7 @@ public final class PunchNative {
         private final String error;
 
         private TunnelResult(JSONObject json) {
+            this.network = json.optString("network", "");
             this.ok = json.optBoolean("ok", false);
             this.handleId = json.optString("handle_id", "");
             this.localForwardPort = json.optLong("local_forward_port", 0);
@@ -116,6 +118,8 @@ public final class PunchNative {
         public String getError() {
             return error;
         }
+        public String getNetwork() { return network; }
+        private final String network;
     }
 
     public static ExchangeResult exchange(

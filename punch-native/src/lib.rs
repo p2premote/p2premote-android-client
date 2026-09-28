@@ -275,3 +275,24 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeStopUdpTunne
         }
     }
 }
+
+/// Application-only adapter; the gonc-compatible library API is unchanged.
+#[no_mangle]
+pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeDetectNat(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on_blocking(p2premote_punch::api::detect_nat(
+            &["udp4", "udp6", "tcp4", "tcp6"], Duration::from_secs(6),
+        ))
+    }));
+    let output = match result {
+        Ok(Ok(Ok(evidence))) => serde_json::to_string(&evidence).unwrap_or_else(|_| "[]".into()),
+        _ => "[]".into(),
+    };
+    match env.new_string(output) {
+        Ok(value) => value.into_raw(),
+        Err(error) => throw_and_null(env, format!("create NAT result failed: {error}")),
+    }
+}

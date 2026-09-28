@@ -81,6 +81,24 @@ public final class WsConnection {
 
     /** 被动端 p2p_notify 回调（attempt_ready/approval_result/attempt_failed）。 */
     private volatile PeerNotifyListener peerNotifyListener;
+    private volatile TraversalBinding traversalBinding;
+
+    interface TraversalListener { void onMessage(JSONObject data); }
+    private static final class TraversalBinding {
+        final String connection, attempt;
+        final long peer;
+        final TraversalListener listener;
+        TraversalBinding(String connection, long peer, String attempt, TraversalListener listener) {
+            this.connection = connection; this.peer = peer; this.attempt = attempt; this.listener = listener;
+        }
+    }
+    void setTraversalListener(String connection, long peer, String attempt, TraversalListener listener) {
+        traversalBinding = new TraversalBinding(connection, peer, attempt, listener);
+    }
+    void clearTraversalListener(String attempt) {
+        TraversalBinding binding = traversalBinding;
+        if (binding != null && binding.attempt.equals(attempt)) traversalBinding = null;
+    }
 
     /** 连接状态变化回调（PresenceService 注册，用于更新通知栏 + 广播 UI）。 */
     private volatile StateListener stateListener;
@@ -401,10 +419,17 @@ public final class WsConnection {
 			}
 
             if ("p2p_notify".equals(type)) {
+                if (payload == null) return;
+                TraversalBinding binding = traversalBinding;
+                if (binding != null && binding.connection.equals(payload.optString("connection_id"))
+                        && binding.peer == payload.optLong("source_device_id")) {
+                    JSONObject business = new JSONObject(payload.optString("data", "{}"));
+                    if (binding.attempt.equals(business.optString("attempt_id"))) binding.listener.onMessage(business);
+                }
                 // 被动端回传（attempt_ready / approval_* / attempt_failed）。data 是嵌套 JSON 字符串。
                 PeerNotifyListener listener = peerNotifyListener;
                 if (listener == null || payload == null) {
-                    Log.d(TAG, "p2p_notify received but no listener, data=" + payload.optString("data", ""));
+                    Log.d(TAG, "p2p_notify received without an attempt listener");
                     return;
                 }
                 String dataStr = payload.optString("data", "");

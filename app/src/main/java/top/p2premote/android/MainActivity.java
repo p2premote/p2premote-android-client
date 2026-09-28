@@ -51,6 +51,7 @@ public final class MainActivity extends Activity {
     private static final int PAGE_CONNECT = 0;
     private static final int PAGE_DEVICES = 1;
     private static final int PAGE_PROFILE = 2;
+    private static final int PAGE_CONNECTION_SETTINGS = 3;
     private static final int VPN_PERMISSION_REQUEST = 100;
     private static final int NOTIFICATION_PERMISSION_REQUEST = 101;
     private static final int SCREEN_LOADING = 0;
@@ -82,6 +83,8 @@ public final class MainActivity extends Activity {
     // 隧道状态（由 WgvpnService 广播驱动）
     private String currentTunnelState = TunnelState.IDLE;
     private String currentTunnelMessage = "";
+    private boolean tcpRetryRecommended;
+    private String selectedNetwork = "";
     private String peerVirtualIp = "";
     private String exposedLan = "";
     /** 隧道连接时间（ms），CONNECTED 时由广播带出，用于展示已连接时长。 */
@@ -180,6 +183,8 @@ public final class MainActivity extends Activity {
             }
             currentTunnelState = safe(intent.getStringExtra(WgvpnService.EXTRA_STATE));
             currentTunnelMessage = safe(intent.getStringExtra(WgvpnService.EXTRA_MESSAGE));
+            tcpRetryRecommended = intent.getBooleanExtra(WgvpnService.EXTRA_TCP_RETRY, false);
+            selectedNetwork = safe(intent.getStringExtra(WgvpnService.EXTRA_NETWORK));
             peerVirtualIp = safe(intent.getStringExtra(WgvpnService.EXTRA_PEER_VIRTUAL_IP));
             exposedLan = safe(intent.getStringExtra(WgvpnService.EXTRA_EXPOSED_LAN));
             connectedAtMs = intent.getLongExtra(WgvpnService.EXTRA_CONNECTED_AT, 0);
@@ -355,6 +360,10 @@ public final class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (currentScreen == SCREEN_APP && currentPage == PAGE_CONNECTION_SETTINGS) {
+            showApp(PAGE_PROFILE);
+            return;
+        }
         if (currentScreen == SCREEN_REGISTER || currentScreen == SCREEN_FORGOT_PASSWORD) {
             showLogin();
             return;
@@ -892,6 +901,9 @@ public final class MainActivity extends Activity {
             // 清空签名强制下次回到连接页时整页重建，避免局部刷新操作到野引用。
             connectPageSignature = "";
             renderDevicesPage();
+        } else if (currentPage == PAGE_CONNECTION_SETTINGS) {
+            connectPageSignature = "";
+            renderConnectionSettingsPage();
         } else {
             connectPageSignature = "";
             renderProfilePage();
@@ -969,6 +981,7 @@ public final class MainActivity extends Activity {
                 + "|" + (exposedLan.isEmpty() ? 0 : 1)
                 + "|" + (speedTesting ? 1 : 0)
                 + "|" + (hasFailureMessage() ? 1 : 0)
+                + "|" + tcpRetryRecommended + "|" + selectedNetwork
                 + "|" + (TunnelState.DEGRADED.equals(currentTunnelState)
                 ? currentTunnelMessage : "");
     }
@@ -1120,11 +1133,22 @@ public final class MainActivity extends Activity {
             if (!exposedLan.isEmpty()) {
                 wrap.addView(helpText("可访问网段：" + exposedLan));
             }
+            if (!selectedNetwork.isEmpty()) wrap.addView(helpText("连接方式：" + selectedNetwork.toUpperCase(java.util.Locale.ROOT)));
         } else if (!currentTunnelMessage.isEmpty()
                 && (TunnelState.FAILED.equals(currentTunnelState)
                 || TunnelState.ABORTED.equals(currentTunnelState)
                 || TunnelState.DEGRADED.equals(currentTunnelState))) {
             wrap.addView(muted(currentTunnelMessage));
+            if (tcpRetryRecommended && TunnelState.FAILED.equals(currentTunnelState)) {
+                Button retry = outlineButton("关闭 TCP 优先并重试", 0xFF2563EB);
+                retry.setOnClickListener(v -> {
+                    ConnectionPreferences preferences = ConnectionPreferences.load(this);
+                    if (!new ConnectionPreferences(preferences.ipv6, false).save(this)) { toast("保存连接设置失败"); return; }
+                    tcpRetryRecommended = false;
+                    if (target != null) startTunnelFlow(target);
+                });
+                wrap.addView(retry);
+            }
         }
         wrap.addView(btn);
         return wrap;
@@ -1377,6 +1401,13 @@ public final class MainActivity extends Activity {
         setAlias.setOnClickListener(v -> promptForAlias(alias));
         aliasCard.addView(setAlias);
         contentRoot.addView(aliasCard);
+        LinearLayout connections = card();
+        connections.addView(body("连接设置"));
+        connections.addView(helpText(ConnectionPreferences.load(this).summary()));
+        connections.setContentDescription("连接设置，IPv6 优先和 TCP 优先");
+        connections.setOnClickListener(v -> showApp(PAGE_CONNECTION_SETTINGS));
+        applyPressFeedback(connections);
+        contentRoot.addView(connections);
 
         // 支持与诊断：收纳 UUID、通知权限和诊断日志等低频排障能力。
         contentRoot.addView(sectionTitle("支持与诊断"));
@@ -1444,6 +1475,39 @@ public final class MainActivity extends Activity {
         Button logout = outlineButton("退出登录", 0xFFB91C1C);
         logout.setOnClickListener(v -> confirmLogout());
         contentRoot.addView(logout);
+    }
+
+    private void renderConnectionSettingsPage() {
+        contentRoot.removeAllViews();
+        Button back = outlineButton("‹ 返回我的", 0xFF2563EB);
+        back.setOnClickListener(v -> showApp(PAGE_PROFILE));
+        contentRoot.addView(back);
+        contentRoot.addView(sectionTitle("连接设置"));
+        ConnectionPreferences preferences = ConnectionPreferences.load(this);
+        final android.widget.Switch ipv6 = new android.widget.Switch(this);
+        final android.widget.Switch tcp = new android.widget.Switch(this);
+        ipv6.setText("IPv6 优先"); ipv6.setChecked(preferences.ipv6);
+        tcp.setText("TCP 优先"); tcp.setChecked(preferences.tcp);
+        for (android.widget.Switch toggle : new android.widget.Switch[]{ipv6, tcp}) {
+            toggle.setMinHeight(dp(48));
+            toggle.setTextColor(0xFF0F172A);
+            toggle.setTextSize(16);
+        }
+        LinearLayout settings = card();
+        settings.addView(ipv6);
+        settings.addView(helpText("两端设备均有 IPv6 地址时建议开启，有助于提升直连链路稳定性。"));
+        settings.addView(spacer(14));
+        settings.addView(tcp);
+        settings.addView(helpText("两端处于同城或同运营商时可尝试开启，有机会提升上传速率和链路稳定性，但打洞成功率可能低于 UDP。仅在至少一端满足 easy NAT 条件时尝试 TCP。"));
+        android.widget.CompoundButton.OnCheckedChangeListener save = (button, checked) -> {
+            if (!new ConnectionPreferences(ipv6.isChecked(), tcp.isChecked()).save(this)) {
+                toast("保存连接设置失败");
+                renderConnectionSettingsPage();
+            }
+        };
+        ipv6.setOnCheckedChangeListener(save); tcp.setOnCheckedChangeListener(save);
+        contentRoot.addView(settings);
+        contentRoot.addView(helpText("自动保存，下一次由本机发起连接时生效。优先方式不可用时自动尝试其他方式。"));
     }
 
     private static String formatDiagSize(long bytes) {
