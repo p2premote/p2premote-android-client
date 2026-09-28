@@ -48,18 +48,25 @@ android {
     }
 }
 
+// native 构建脚本按宿主 OS 选择：Windows 走 PowerShell 脚本（rust 缓存在
+// N:\rust-cache），Linux/macOS（CI、开源贡献者）走等价的 bash 脚本。
+def hostIsWindows = System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("windows")
+def nativeScriptCommand = { String scriptName ->
+    hostIsWindows
+            ? ["powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts/$scriptName.ps1"]
+            : ["bash", "scripts/$scriptName.sh"]
+}
+
 // 测速使用独立的 Rust riperf3 JNI 库；只构建 app 时自动确保两个 ABI 都存在。
 tasks.register("buildRiperf3Native", Exec) {
     workingDir rootProject.projectDir
-    commandLine "powershell", "-ExecutionPolicy", "Bypass", "-File",
-            "scripts/build-riperf3-native.ps1"
+    commandLine nativeScriptCommand("build-riperf3-native")
 }
 
 // P2P 打洞层为 Rust 版 gonc（p2premote-punch-rs-gonc 的 JNI 绑定）。
 tasks.register("buildPunchNative", Exec) {
     workingDir rootProject.projectDir
-    commandLine "powershell", "-ExecutionPolicy", "Bypass", "-File",
-            "scripts/build-punch-native.ps1"
+    commandLine nativeScriptCommand("build-punch-native")
 }
 
 tasks.named("preBuild").configure {

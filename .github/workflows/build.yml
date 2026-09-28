@@ -1,0 +1,168 @@
+# Android 客户端自动构建。
+#
+# 仓库布局要求（与桌面端 build.yml 同一套兄弟目录约束）：
+#   p2premote-android-client（本仓库）
+#   ../p2premote-punch-rs   （punch-native/Cargo.toml 的 path 依赖 ../../p2premote-punch-rs）
+#   ../p2premote-wg-ffi     （libwgmobile.aar 数据面 AAR 源码，gomobile 现场构建）
+# 因此这两个仓库必须推到同一个 GitHub 账号/组织下，本 workflow 用
+# actions/checkout 的 path: ../<repo> 在 runner 上还原出与本地 p2premote-all
+# 一致的目录结构。
+#
+# 触发方式：
+#   1. push 到 main：CI 构建，版本号 0.0.0-ci.<短提交号>；
+#   2. push tag（如 v1.6.4）：构建带正式版本号的 APK；
+#   3. Actions 页面手动触发（workflow_dispatch），输入三段式版本号。
+#
+# 产物为 Release APK（R8 裁剪），签名沿用 build.gradle 的 debug keystore 配置：
+# runner 上自动生成全新 debug keystore，APK 可安装但与本地构建的不能互相覆盖升级。
+#
+# 私有仓库注意：github.token 只能读当前仓库。p2premote-punch-rs /
+# p2premote-wg-ffi 任一为私有时，需在 Settings -> Secrets and variables ->
+# Actions 配置 CROSS_REPO_TOKEN（classic PAT，勾选 repo 读权限）；
+# 未配置时表达式自动回退到 github.token（公开仓库足够）。
+#
+# 构建链路：
+#   NDK(钉版 27.0.12077973) -> [缓存命中则跳过] gomobile bind 出 libwgmobile.aar
+#   -> rust-toolchain 1.77.2（与 punch-rs 的 rust-toolchain.toml 一致）
+#   -> gradlew assembleRelease（preBuild 自动走 scripts/*.sh 交叉编译两个
+#      Rust JNI 库到 app/src/main/jniLibs/）
+
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（三段式 SemVer，例如 1.6.4）'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# 同一 ref 的新 push 取消进行中的旧 run；手动 dispatch 只排队不取消
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+env:
+  CHECKOUT_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
+  # 与 scripts/build-*-native.ps1/.sh 的默认值一致；升级 NDK 时同步修改
+  NDK_VERSION: '27.0.12077973'
+
+jobs:
+  android-apk:
+    name: Android APK（arm64-v8a + x86_64）
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout p2premote-android-client
+        uses: actions/checkout@v4
+
+      - name: Checkout p2premote-punch-rs
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-punch-rs
+          path: ../p2premote-punch-rs
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Checkout p2premote-wg-ffi
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/p2premote-wg-ffi
+          path: ../p2premote-wg-ffi
+          token: ${{ env.CHECKOUT_TOKEN }}
+
+      - name: Resolve build version
+        id: version
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == refs/tags/* ]]; then
+            raw="${GITHUB_REF_NAME#v}"
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            raw="${{ inputs.version }}"
+          else
+            raw="0.0.0-ci.${GITHUB_SHA::7}"
+          fi
+          if [[ ! "$raw" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::版本号必须是三段式 SemVer（如 1.6.4），当前为 '$raw'"
+            exit 1
+          fi
+          echo "version=$raw" >> "$GITHUB_OUTPUT"
+
+      # ubuntu runner 自带 Android SDK 与 cmdline-tools，但 NDK 版本不固定，
+      # 钉版安装与本地 ps1/sh 脚本一致，避免 runner 镜像更新引起工具链漂移
+      - name: Install pinned Android NDK
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          echo "Installing NDK $NDK_VERSION"
+          "$SDKMANAGER" --install "ndk;$NDK_VERSION"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # libwgmobile.aar 按 wg-ffi 提交内容缓存：wg-ffi 不动则整段 gomobile
+      # 构建（最慢的一步）直接跳过
+      - name: Resolve wg-ffi revision
+        run: echo "WGFFI_SHA=$(git -C ../p2premote-wg-ffi rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Cache libwgmobile.aar
+        id: aar-cache
+        uses: actions/cache@v4
+        with:
+          path: ../p2premote-wg-ffi/libwgmobile.aar
+          key: libwgmobile-aar-${{ env.WGFFI_SHA }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: ../p2premote-wg-ffi/mobile/libwgmobile/go.sum
+
+      - name: Build libwgmobile.aar
+        if: steps.aar-cache.outputs.cache-hit != 'true'
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          gomobile init
+          ../p2premote-wg-ffi/build-android-aar.sh
+
+      - name: Copy AAR into app/libs
+        run: |
+          mkdir -p app/libs
+          cp ../p2premote-wg-ffi/libwgmobile.aar app/libs/
+
+      # 1.77.2 与 p2premote-punch-rs/rust-toolchain.toml 一致（Win7 兼容线）；
+      # 两个 Rust JNI 库由 preBuild 任务调 scripts/*.sh 自动交叉编译
+      - uses: dtolnay/rust-toolchain@1.77.2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            punch-native
+            riperf3-native
+
+      - name: Build APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --console=plain \
+            "-Pp2premoteClientVersion=${{ steps.version.outputs.version }}"
+
+      - name: Collect APK
+        run: |
+          mkdir -p artifacts/android-apk
+          cp app/build/outputs/apk/release/app-release.apk \
+            "artifacts/android-apk/p2pRemote-${{ steps.version.outputs.version }}.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: artifacts/android-apk/
+          if-no-files-found: error
