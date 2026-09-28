@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 
 /** Active-side application coordinator. No changes to the punch MQTT protocol. */
 final class TraversalClient implements AutoCloseable {
+    private static final String TAG = "TraversalClient";
     interface Check { void run() throws Exception; }
     private final WsConnection ws;
     private final ApiClient.OpenResult opened;
@@ -129,8 +130,10 @@ final class TraversalClient implements AutoCloseable {
         boolean remoteGate = Boolean.TRUE.equals(gateValue);
         List<String> plan = TraversalPolicy.plan(preferences.ipv6, preferences.tcp, evidence(bounded), evidence(remote),
                 remoteGate ? ipv6 : null, remoteGate ? remoteIpv6 : null);
+        DiagLog.i(TAG, "traversal plan proposed: " + plan);
         send(frame("plan", 0).put("networks", new JSONArray(plan)));
         JSONArray accepted = waitFrame(0, "plan_ack").getJSONArray("networks");
+        DiagLog.i(TAG, "traversal plan selection acknowledged by peer: " + accepted);
         if (accepted.length() != plan.size()) throw new IllegalStateException("traversal_plan_mismatch");
         for (int i = 0; i < plan.size(); i++) if (!plan.get(i).equals(accepted.getString(i))) throw new IllegalStateException("traversal_plan_mismatch");
         List<String> rounds = new ArrayList<>();
