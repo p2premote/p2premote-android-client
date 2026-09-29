@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class ApiClient {
     private static final int CONNECT_TIMEOUT_MS = 15_000;
     private static final int READ_TIMEOUT_MS = 30_000;
-    private static final long TOTAL_REQUEST_TIMEOUT_MS = 45_000L;
+    static final long TOTAL_REQUEST_TIMEOUT_MS = 45_000L;
     private static final int VERSION_CONNECT_TIMEOUT_MS = 3_000;
     private static final int VERSION_READ_TIMEOUT_MS = 2_000;
     private static final long VERSION_TOTAL_TIMEOUT_MS = 5_000L;
@@ -186,11 +186,6 @@ final class ApiClient {
                 data.optString("source_username"),
                 data.optString("source_email")
         );
-    }
-
-    void reportP2PEnd(OpenResult opened, DeviceItem target, boolean success,
-                      String errorCode, String errorMessage) throws Exception {
-        reportP2PEnd(opened, target, success, "unknown", "unknown", "", "", "", 0, errorCode, errorMessage);
     }
 
     void reportP2PEnd(OpenResult opened, DeviceItem target, boolean success,
@@ -497,11 +492,7 @@ final class ApiClient {
         }
     }
 
-    static String readFully(InputStream stream, long startedNanos) throws IOException {
-        return readFully(stream, startedNanos, TOTAL_REQUEST_TIMEOUT_MS);
-    }
-
-    private static String readFully(InputStream stream, long startedNanos, long totalTimeoutMs) throws IOException {
+    static String readFully(InputStream stream, long startedNanos, long totalTimeoutMs) throws IOException {
         if (stream == null) {
             return "{}";
         }

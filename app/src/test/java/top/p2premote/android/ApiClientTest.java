@@ -18,7 +18,8 @@ public final class ApiClientTest {
 
         String result = ApiClient.readFully(
                 new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)),
-                System.nanoTime());
+                System.nanoTime(),
+                ApiClient.TOTAL_REQUEST_TIMEOUT_MS);
 
         assertEquals(json, result);
     }
@@ -28,7 +29,8 @@ public final class ApiClientTest {
         byte[] response = new byte[ApiClient.MAX_RESPONSE_BYTES + 1];
 
         try {
-            ApiClient.readFully(new ByteArrayInputStream(response), System.nanoTime());
+            ApiClient.readFully(new ByteArrayInputStream(response), System.nanoTime(),
+                    ApiClient.TOTAL_REQUEST_TIMEOUT_MS);
             fail("oversized response should be rejected");
         } catch (IOException error) {
             assertTrue(error.getMessage().contains("响应过大"));

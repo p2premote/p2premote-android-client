@@ -84,10 +84,6 @@ final class NetworkRecoveryPolicy {
         return generation;
     }
 
-    synchronized String fingerprint() {
-        return fingerprint;
-    }
-
     synchronized boolean usable() {
         return usable;
     }

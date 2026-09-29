@@ -2178,7 +2178,6 @@ public final class MainActivity extends Activity {
     }
 
     private Button primaryButton(String text) { return styledButton(text, 0xFF2563EB, 0xFFFFFFFF, 14); }
-    private Button dangerButton(String text) { return styledButton(text, 0xFFDC2626, 0xFFFFFFFF, 14); }
     /** B6：描边次要按钮（白底 + 彩色字 + 彩色描边），降低破坏性操作的视觉权重。 */
     private Button outlineButton(String text, int color) {
         Button button = styledButton(text, 0xFFFFFFFF, color, 14);

@@ -1,7 +1,6 @@
 ﻿param(
     [string]$AndroidSdk = "",
-    [string]$NdkVersion = "27.0.12077973",
-    [switch]$NoSccache # Retained for compatibility; builds always use rustc directly.
+    [string]$NdkVersion = "27.0.12077973"
 )
 
 $ErrorActionPreference = "Stop"

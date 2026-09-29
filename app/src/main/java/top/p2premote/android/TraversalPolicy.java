@@ -10,9 +10,6 @@ final class TraversalPolicy {
         final String network, natType;
         Evidence(String network, String natType) { this.network = network; this.natType = natType; }
     }
-    static List<String> plan(boolean ipv6, boolean tcp, List<Evidence> local, List<Evidence> remote) {
-        return plan(ipv6, tcp, local, remote, null, null);
-    }
     static boolean usableIpv6(byte[] address) {
         return address.length == 16 && (address[0] & 0xe0) == 0x20
                 && !((address[0] & 0xff) == 0x20 && (address[1] & 0xff) == 1
