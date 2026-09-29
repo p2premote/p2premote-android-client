@@ -86,15 +86,16 @@ jobs:
 
       - name: Resolve build version
         id: version
+        # 只解析三段式基线版本；短提交号由 build.ps1 自己追加（与本地一致）
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == refs/tags/* ]]; then
             raw="${GITHUB_REF_NAME#v}"
           elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             raw="${{ inputs.version }}"
           else
-            raw="0.0.0-ci.${GITHUB_SHA::7}"
+            raw="$(grep -E '^p2premoteBaseVersion=' gradle.properties | head -1 | cut -d= -f2 | tr -d '[:space:]')"
           fi
-          if [[ ! "$raw" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "$raw" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::版本号必须是三段式 SemVer（如 1.6.4），当前为 '$raw'"
             exit 1
           fi
@@ -168,21 +169,16 @@ jobs:
             punch-native
             riperf3-native
 
+      # 与本地完全同一条入口：build.ps1 自动追加短提交号、执行 gradle
+      # assembleRelease（preBuild 走 sh 脚本编两个 Rust JNI 库）并把 APK
+      # 重命名为 p2pRemote-<版本>-<sha>.apk 放进 artifacts/
       - name: Build APK
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon --console=plain \
-            "-Pp2premoteClientVersion=${{ steps.version.outputs.version }}"
-
-      - name: Collect APK
-        run: |
-          mkdir -p artifacts/android-apk
-          cp app/build/outputs/apk/release/app-release.apk \
-            "artifacts/android-apk/p2pRemote-${{ steps.version.outputs.version }}.apk"
+        shell: pwsh
+        run: ./build.ps1 -v "${{ steps.version.outputs.version }}"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
-          path: artifacts/android-apk/
+          name: p2pRemote-${{ steps.version.outputs.version }}
+          path: artifacts/p2pRemote-*.apk
           if-no-files-found: error

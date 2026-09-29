@@ -43,8 +43,11 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "version must be in semver format like 1.2.3"
 }
 
-if (-not $env:ANDROID_HOME) { $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk" }
-$env:Path += ";$env:ANDROID_HOME\platform-tools;$env:ANDROID_HOME\cmdline-tools\latest\bin"
+# ANDROID_HOME 回退仅在有 LOCALAPPDATA 的 Windows 生效；Linux/macOS（含 CI）
+# 必须预先设置 ANDROID_HOME
+if (-not $env:ANDROID_HOME -and $env:LOCALAPPDATA) { $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk" }
+$pathSeparator = [IO.Path]::PathSeparator
+$env:Path += "$pathSeparator$($env:ANDROID_HOME)/platform-tools$pathSeparator$($env:ANDROID_HOME)/cmdline-tools/latest/bin"
 
 $projectRoot = $PSScriptRoot
 $gitCommitOutput = & git -C $projectRoot rev-parse --short=6 HEAD
@@ -68,13 +71,17 @@ Write-Host "Building Android client version $buildVersion ($Configuration)"
 
 Push-Location $projectRoot
 try {
-    & .\gradlew.bat "assemble$Configuration" --no-daemon "-Pp2premoteClientVersion=$buildVersion"
+    # Windows 用 gradlew.bat，Linux/macOS（CI 的 pwsh）用 ./gradlew；
+    # gradle preBuild 会按宿主 OS 自动选择 ps1/sh 的 native 构建脚本
+    $isWindowsHost = $IsWindows -or $env:OS -eq 'Windows_NT'
+    $gradleWrapper = if ($isWindowsHost) { '.\gradlew.bat' } else { './gradlew' }
+    & $gradleWrapper "assemble$Configuration" --no-daemon "-Pp2premoteClientVersion=$buildVersion"
     if ($LASTEXITCODE -ne 0) {
         throw "Gradle build failed with exit code $LASTEXITCODE"
     }
 
     $configurationDirectory = $Configuration.ToLowerInvariant()
-    $apkDirectory = Join-Path $projectRoot "app\build\outputs\apk\$configurationDirectory"
+    $apkDirectory = Join-Path $projectRoot "app/build/outputs/apk/$configurationDirectory"
     $sourceApkName = switch ($Configuration) {
         'Debug' { 'app-debug.apk' }
         'Release' { 'app-release.apk' }

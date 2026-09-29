@@ -1,6 +1,6 @@
 # Android 客户端编译说明
 
-Android 客户端统一使用 `-v` 传入版本号，格式为三段式 SemVer，例如 `1.6.4`。脚本会追加当前 Git 短提交号，最终 APK 版本名类似 `1.6.4-abcdef`。
+Android 客户端统一使用 `-v` 传入版本号，格式为三段式 SemVer，例如 `1.6.4`。脚本会追加当前 Git 短提交号，最终 APK 版本名类似 `1.6.4-abcdef`。脚本同时支持 Windows PowerShell 与 Linux/macOS 的 pwsh（CI 即直接调用本脚本）；CI 的 push 构建版本号取 `gradle.properties` 的 `p2premoteBaseVersion`，发版时需同步更新。
 
 ## 环境要求
 
