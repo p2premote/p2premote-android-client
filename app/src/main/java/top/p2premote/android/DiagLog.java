@@ -73,9 +73,8 @@ public final class DiagLog {
     private static void writeLine(File file, File rotated, String line) {
         try {
             if (file.length() > MAX_BYTES) {
-                if (rotated.exists() && !rotated.delete()) {
-                    // 删不掉旧文件时放弃本次轮转，仅截断当前文件兜底。
-                }
+                // 尽力删除旧轮转文件；删不掉时 renameTo 同样会失败，走下面的截断兜底。
+                rotated.delete();
                 if (!file.renameTo(rotated)) {
                     // 轮转失败（极小概率）：截断重来，丢历史保可用。
                     new FileOutputStream(file, false).close();
@@ -147,7 +146,7 @@ public final class DiagLog {
         File old = new File(dir, OLD_FILE_NAME);
         ExecutorService executor = writer;
         Runnable task = () -> {
-            // 附一条清空标记，保留文件句话语权（下一次连接会话从这里重新开始）。
+            // 删除两个日志文件后重建当前文件并写入清空标记（下一次连接会话从这里重新开始）。
             current.delete();
             old.delete();
             try {

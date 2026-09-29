@@ -412,11 +412,11 @@ public final class WsConnection {
                 return;
             }
 
-			if ("wol_request".equals(type) && payload != null) {
-				final JSONObject request = payload;
-				new Thread(() -> handleWolRequest(request), "p2premote-wol").start();
-				return;
-			}
+            if ("wol_request".equals(type) && payload != null) {
+                final JSONObject request = payload;
+                new Thread(() -> handleWolRequest(request), "p2premote-wol").start();
+                return;
+            }
 
             if ("p2p_notify".equals(type)) {
                 if (payload == null) return;
@@ -443,13 +443,28 @@ public final class WsConnection {
         }
     }
 
-	private void handleWolRequest(JSONObject payload) {
-		String requestId=payload.optString("request_id",""); boolean success=false; String code="send_failed";
-		try { if(requestId.isEmpty())return; WolSupport.send(payload.optJSONArray("macs"),payload.optString("target_ipv4",""),payload.optInt("prefix_len",0)); success=true; code="sent"; }
-		catch(Exception e){Log.w(TAG,"WOL send failed: "+e.getMessage());}
-		try { WebSocketClient socket=webSocket; if(socket!=null&&socket.isOpen())socket.send(new JSONObject().put("type","wol_result").put("payload",new JSONObject().put("request_id",requestId).put("success",success).put("code",code)).toString()); }
-		catch(Exception e){Log.w(TAG,"WOL result send failed: "+e.getMessage());}
-	}
+    private void handleWolRequest(JSONObject payload) {
+        String requestId = payload.optString("request_id", "");
+        boolean success = false;
+        String code = "send_failed";
+        try {
+            if (requestId.isEmpty()) return;
+            WolSupport.send(payload.optJSONArray("macs"), payload.optString("target_ipv4", ""), payload.optInt("prefix_len", 0));
+            success = true;
+            code = "sent";
+        } catch (Exception e) {
+            Log.w(TAG, "WOL send failed: " + e.getMessage());
+        }
+        try {
+            WebSocketClient socket = webSocket;
+            if (socket != null && socket.isOpen()) {
+                socket.send(new JSONObject().put("type", "wol_result").put("payload", new JSONObject()
+                        .put("request_id", requestId).put("success", success).put("code", code)).toString());
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "WOL result send failed: " + e.getMessage());
+        }
+    }
 
     /**
      * 解析被动端 p2p_notify 的 data（嵌套 JSON），按 type 回调 listener。

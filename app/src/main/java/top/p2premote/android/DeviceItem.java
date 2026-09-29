@@ -17,7 +17,7 @@ final class DeviceItem {
     final String remoteAccessProtocol;
     final boolean remoteAccessEnabled;
     final int remoteAccessPort;
-	final boolean wakeAvailable;
+    final boolean wakeAvailable;
 
     DeviceItem(
             long id,
@@ -54,7 +54,7 @@ final class DeviceItem {
         this.remoteAccessProtocol = remoteAccessProtocol == null ? "" : remoteAccessProtocol;
         this.remoteAccessEnabled = remoteAccessEnabled;
         this.remoteAccessPort = remoteAccessPort > 0 ? remoteAccessPort : servicePort;
-		this.wakeAvailable = wakeAvailable;
+        this.wakeAvailable = wakeAvailable;
     }
 
     String displayName() {

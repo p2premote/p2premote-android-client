@@ -45,7 +45,7 @@
                 android:value="vpn_tunnel" />
         </service>
 
-        <!-- 在线保活服务：维持 WebSocket 长连接，OkHttp 自动 Ping 续期服务端在线状态 -->
+        <!-- 在线保活服务：维持 WebSocket 长连接（Java-WebSocket），周期协议 Ping 续期服务端在线状态 -->
         <service
             android:name=".PresenceService"
             android:exported="false"

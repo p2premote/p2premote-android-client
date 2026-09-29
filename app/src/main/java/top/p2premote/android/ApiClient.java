@@ -116,9 +116,9 @@ final class ApiClient {
         req.put("service_port", 0);
         req.put("rdp_enabled", false);
         req.put("remote_access", JSONObject.NULL);
-		JSONObject wol = WolSupport.capability();
-		req.put("capabilities", new JSONArray());
-		if (wol != null) req.put("wol_capability", wol);
+        JSONObject wol = WolSupport.capability();
+        req.put("capabilities", new JSONArray());
+        if (wol != null) req.put("wol_capability", wol);
 
         JSONObject data = authedRequest(session, "POST", "/api/v1/devices", req);
         DeviceItem device = parseDevice(data);
@@ -132,10 +132,10 @@ final class ApiClient {
         return listDevicesWithSession(session);
     }
 
-	String wakeDevice(long deviceId) throws Exception {
-		JSONObject data=authedRequest(sessionStore.require(),"POST","/api/v1/devices/"+deviceId+"/wake",null);
-		return data.optString("status","send_failed");
-	}
+    String wakeDevice(long deviceId) throws Exception {
+        JSONObject data = authedRequest(sessionStore.require(), "POST", "/api/v1/devices/" + deviceId + "/wake", null);
+        return data.optString("status", "send_failed");
+    }
 
     /**
      * 发起 P2P 隧道任务鉴权（新协议 p2p/open）。
@@ -373,8 +373,8 @@ final class ApiClient {
                 item.optString("client_version"),
                 remoteProtocol,
                 remoteEnabled,
-				remotePort,
-				item.optBoolean("wake_available", false)
+                remotePort,
+                item.optBoolean("wake_available", false)
         );
     }
 

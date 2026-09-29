@@ -1297,15 +1297,20 @@ public final class MainActivity extends Activity {
             card.addView(helpText("该设备不能作为连接目标"));
         }
 
-		TextView details = helpText("查看设备详情");
-		details.setTextColor(0xFF2563EB);
-		details.setOnClickListener(v -> showDeviceDetails(device));
-		card.addView(details);
-		if (!isOnline(device) && device.wakeAvailable) {
-			Button wake=primaryButton("唤醒设备");
-				wake.setOnClickListener(v -> runAsync("正在发送唤醒包...",()->apiClient.wakeDevice(device.id), status->{ if("sent".equals(status))toast("唤醒包已发送");else toast(wolError(status)); }));
-			card.addView(wake);
-		}
+        TextView details = helpText("查看设备详情");
+        details.setTextColor(0xFF2563EB);
+        details.setOnClickListener(v -> showDeviceDetails(device));
+        card.addView(details);
+        if (!isOnline(device) && device.wakeAvailable) {
+            Button wake = primaryButton("唤醒设备");
+            wake.setOnClickListener(v -> runAsync("正在发送唤醒包...",
+                    () -> apiClient.wakeDevice(device.id),
+                    status -> {
+                        if ("sent".equals(status)) toast("唤醒包已发送");
+                        else toast(wolError(status));
+                    }));
+            card.addView(wake);
+        }
 
         card.setClickable(canAcceptP2P);
         if (canAcceptP2P) {
@@ -1347,7 +1352,13 @@ public final class MainActivity extends Activity {
         return icon;
     }
 
-	private String wolError(String status) { if("no_relay".equals(status))return "目标局域网内没有可用的在线节点"; if("relay_timeout".equals(status))return "唤醒节点响应超时"; if("target_online".equals(status))return "设备已经在线"; if("unsupported".equals(status))return "设备尚未上报唤醒能力"; return "唤醒包发送失败"; }
+    private String wolError(String status) {
+        if ("no_relay".equals(status)) return "目标局域网内没有可用的在线节点";
+        if ("relay_timeout".equals(status)) return "唤醒节点响应超时";
+        if ("target_online".equals(status)) return "设备已经在线";
+        if ("unsupported".equals(status)) return "设备尚未上报唤醒能力";
+        return "唤醒包发送失败";
+    }
 
     // ============ 我的页 ============
 
@@ -1948,7 +1959,7 @@ public final class MainActivity extends Activity {
             if (http == 401 || http == 403) return ERR_CREDENTIALS;
             return ERR_OTHER;
         }
-        // IOException 视为网络/IO（含 OkHttp/HttpURLConnection 连接失败、超时）。
+        // IOException 视为网络/IO（含 HttpURLConnection/Java-WebSocket 连接失败、超时）。
         if (e instanceof java.io.IOException) return ERR_NETWORK;
         return ERR_OTHER;
     }

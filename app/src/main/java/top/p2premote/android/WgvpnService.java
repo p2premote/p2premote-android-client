@@ -45,16 +45,16 @@ import top.p2premote.android.PunchNative.TunnelResult;
  * wgvpn 隧道服务（Foreground + VpnService）。
  *
  * 实现完整的 wgvpn active 建链/断链流程，对齐桌面端新 P2P 信令协议（commit 346a5e2）：
- *   1. 生成/加载 WG 密钥对
- *   2. POST /api/v1/p2p/open -> connection_id + access_grant（无 punch_token）
- *   3. 客户端生成 punch_token + attempt_id
- *   4. WS p2p_notify(attempt_start) -> 服务端 ack
- *   5. WS 等待被动端 attempt_ready（≤30s）
- *   6. gonc Exchange(punch_token) -> 双方虚拟 IP + 公钥
- *   7. gonc StartUdpTunnel -> local_forward_port
- *   8. VpnService establish TUN fd + WG Start/AddPeer + 等握手
- *   9. POST /api/v1/p2p/end {connection_id}
- *  10. 广播状态到 UI
+ *   - 生成/加载 WG 密钥对
+ *   - POST /api/v1/p2p/open -> connection_id + access_grant（无 punch_token）
+ *   - 客户端生成 punch_token + attempt_id
+ *   - WS p2p_notify(attempt_start) -> 服务端 ack
+ *   - WS 等待被动端 attempt_ready（≤30s）
+ *   - gonc Exchange(punch_token) -> 双方虚拟 IP + 公钥
+ *   - gonc StartUdpTunnel -> local_forward_port
+ *   - VpnService establish TUN fd + WG Start/AddPeer + 等握手
+ *   - POST /api/v1/p2p/end {connection_id}
+ *   - 广播状态到 UI
  *
  * WS 信令通过 WsConnection 单例收发（与 PresenceService 共享同一连接）。
  *
@@ -155,7 +155,7 @@ public final class WgvpnService extends VpnService {
     private static final int CODE_DEVICE_OFFLINE = 1054;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    /** 非 native 控制任务不能堵住断链清理队列（测速最长可等待 60 秒）。 */
+    /** 非 native 控制任务不能堵住断链清理队列（测速最长可等待 30 秒）。 */
     private final ExecutorService controlExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService attemptCleanupExecutor = Executors.newSingleThreadExecutor();
     private ApiClient apiClient;
@@ -756,7 +756,7 @@ public final class WgvpnService extends VpnService {
                 }
                 ensureStartGeneration(expectedGeneration);
 
-                // 步骤 1: 生成/加载 WG 密钥对
+                // 生成/加载 WG 密钥对
                 emit(TunnelState.PREPARING, "正在准备密钥和打洞请求", "", "", "");
                 String privateKeyHex = session.wgPrivateKeyHex;
                 String publicKeyHex = session.wgPublicKeyHex;
@@ -768,7 +768,7 @@ public final class WgvpnService extends VpnService {
                             accountGeneration, privateKeyHex, publicKeyHex);
                 }
 
-                // 步骤 2: 向服务端发起 p2p/open 鉴权（新协议，返回 connection_id/access_grant）
+                // 向服务端发起 p2p/open 鉴权（新协议，返回 connection_id/access_grant）
                 emit(TunnelState.PREPARING, "正在向服务端申请隧道", "", "", "");
                 String clientJobId = ApiClient.buildClientJobId(targetDeviceId);
                 opened = openP2PWithRetry(clientJobId, targetItem);
@@ -783,13 +783,13 @@ public final class WgvpnService extends VpnService {
                 targetItem = targetItem.withRemoteAccess(
                         opened.targetRemoteProtocol, true, opened.targetRdpPort);
 
-                // 步骤 3: 客户端生成 punch_token + attempt_id（新协议下 token 由客户端生成）
+                // 客户端生成 punch_token + attempt_id（新协议下 token 由客户端生成）
                 String punchToken = ApiClient.buildPunchToken(session.deviceId, targetDeviceId);
                 String attemptId = ApiClient.buildAttemptId(targetDeviceId, 1);
                 activeAttemptId = attemptId;
                 Log.i(TAG, "generated attempt_id=" + attemptId);
 
-                // 步骤 4: 通过 WS 发 p2p_notify(attempt_start) 给被动端，等服务端 ack
+                // 通过 WS 发 p2p_notify(attempt_start) 给被动端，等服务端 ack
                 emit(TunnelState.EXCHANGING, "正在通知对端准备隧道", "", "", "");
                 WsConnection ws = WsConnection.get(this);
                 attemptWs = ws;
@@ -865,7 +865,7 @@ public final class WgvpnService extends VpnService {
                 attemptStarted = true;
                 Log.i(TAG, "p2p_notify acked, waiting attempt_ready");
 
-                // 步骤 5: 等待被动端 attempt_ready（≤30 秒）
+                // 等待被动端 attempt_ready（≤30 秒）
                 emit(TunnelState.EXCHANGING, "正在等待对端就绪", "", "", "");
                 if (!readyLatch.await(PEER_READY_TIMEOUT_SEC, TimeUnit.SECONDS)) {
                     ws.setPeerNotifyListener(null);
@@ -881,7 +881,7 @@ public final class WgvpnService extends VpnService {
                 Log.i(TAG, "attempt_ready received: rdp_port=" + readyRdpPort[0] + ", starting gonc exchange");
                 DiagLog.i(TAG, "attempt_ready rdp_port=" + readyRdpPort[0]);
 
-                // 步骤 6: gonc Exchange（密钥 + 虚拟 IP 交换，用步骤3生成的 punch_token）
+                // gonc Exchange（密钥 + 虚拟 IP 交换，用上面生成的 punch_token）
                 emit(TunnelState.EXCHANGING, "正在交换密钥和虚拟 IP", "", "", "");
                 // 构造 ExchangePayload JSON，必须包含桌面端 serde 反序列化要求的所有必需字段。
                 // 缺少这些字段会导致桌面端 ExchangePayload::parse 失败（attempt_failed）。
@@ -940,7 +940,7 @@ public final class WgvpnService extends VpnService {
                         + " exposedLan=" + exposedLan);
                 DiagLog.i(TAG, "exchange recv myIp=" + assignedIp + " peerIp=" + peerIp + " exposedLan=" + exposedLan);
 
-                // 步骤 7: gonc StartUdpTunnel
+                // gonc StartUdpTunnel
                 emit(TunnelState.PUNCHING, "正在进行 P2P 打洞", "", "", "");
                 JSONObject tunnelReq = new JSONObject();
                 tunnelReq.put("token", punchToken);
@@ -976,7 +976,7 @@ public final class WgvpnService extends VpnService {
                         + " peerEndpoint=" + tunnelResult.getPeerEndpoint());
                 DiagLog.i(TAG, "traversal selected=" + tunnelResult.getSelectedTraversal());
 
-                // 步骤 5: VpnService establish TUN fd
+                // VpnService establish TUN fd
                 emit(TunnelState.CONNECTING, "正在建立虚拟网卡", myVirtualIp, peerVirtualIp, exposedLan);
                 Builder builder = new Builder();
                 builder.setSession("p2pRemote");
@@ -1021,7 +1021,7 @@ public final class WgvpnService extends VpnService {
                     throw new IllegalStateException("VpnService 建立虚拟网卡失败");
                 }
 
-                // 步骤 6: userspace WG Start + AddPeer
+                // userspace WG Start + AddPeer
                 WgResult wgStart = Libwgmobile.wgStart(tunFd.getFd(), privateKeyHex, WG_LISTEN_PORT, WGVPN_MTU);
                 if (!wgStart.getOK()) {
                     throw new IllegalStateException("WireGuard 启动失败：" + wgStart.getError());
@@ -1047,7 +1047,7 @@ public final class WgvpnService extends VpnService {
                     throw new IllegalStateException("WireGuard 添加 peer 失败：" + wgPeer.getError());
                 }
 
-                // 步骤 7: 等 WG 握手（最多 15 秒）
+                // 等 WG 握手（最多 15 秒）
                 emit(TunnelState.CONNECTING, "等待安全通道握手", myVirtualIp, peerVirtualIp, exposedLan);
                 long deadline = System.currentTimeMillis() + WG_HANDSHAKE_TIMEOUT_SEC * 1000L;
                 boolean handshakeOk = false;
@@ -1077,7 +1077,7 @@ public final class WgvpnService extends VpnService {
                 }
                 ws.setPeerNotifyListener(null);
 
-                // 步骤 9: 上报成功
+                // 上报成功
                 try {
                     apiClient.reportP2PEnd(
                             opened,
@@ -1096,7 +1096,7 @@ public final class WgvpnService extends VpnService {
                     Log.w(TAG, "p2p/end 上报失败（不影响隧道）: " + reportError.getMessage());
                 }
 
-                // 步骤 9: 推送成功状态
+                // 推送成功状态
                 connectedAtMs = System.currentTimeMillis();
                 Log.i(TAG, "tunnel CONNECTED: myIp=" + myVirtualIp + " peerIp=" + peerVirtualIp
                         + " health target=" + peerVirtualIp + ":" + HEALTH_PORT);
@@ -1276,28 +1276,28 @@ public final class WgvpnService extends VpnService {
      * 用于 p2p/end 失败上报，便于管理后台按错误类型归因统计。
      *
      * 按建链阶段从后往前匹配，避免宽泛关键词吞掉后面的精确阶段。异常消息均为
-     * WgvpnService 内 IllegalStateException 的中文文案（见 startTunnel 各步骤 throw）。
+     * WgvpnService 内 IllegalStateException 的中文文案（见 startTunnel 各阶段 throw）。
      */
     private static String classifyErrorCode(String msg) {
         if (msg == null) return "internal_error";
         if (msg.contains("审批超时")) return "approval_timeout";
         if (msg.contains("未允许业务数据")) return "approval_denied";
-        // 步骤 8: WireGuard 握手（最靠后，优先判断）
+        // WireGuard 握手（最靠后，优先判断）
         if (msg.contains("握手超时") || msg.contains("握手")) return "wireguard_handshake_failed";
         if (msg.contains("添加 peer")) return "wireguard_config_failed";
         if (msg.contains("WireGuard 启动")) return "wireguard_config_failed";
         if (msg.contains("虚拟网卡") || msg.contains("VpnService")) return "wireguard_config_failed";
-        // 步骤 7: P2P 打洞 / 转发端口
+        // P2P 打洞 / 转发端口
         if (msg.contains("gonc 未返回")) return "hole_punch_wait_timeout";
         if (msg.contains("P2P 打洞")) return "hole_punch_wait_timeout";
-        // 步骤 6: 密钥交换（数据校验失败归 internal，仅交换失败归打洞）
+        // 密钥交换（数据校验失败归 internal，仅交换失败归打洞）
         if (msg.contains("密钥交换失败")) return "hole_punch_wait_timeout";
         if (msg.contains("数据不完整")) return "internal_error";
-        // 步骤 5: 等待对端 attempt_ready
+        // 等待对端 attempt_ready
         if (msg.contains("等待对端准备超时") || msg.contains("对端准备失败")) return "peer_prepare_timeout";
-        // 步骤 4: WS 信令发送（服务端拒绝或 WS 断开）
+        // WS 信令发送（服务端拒绝或 WS 断开）
         if (msg.contains("打洞信令发送失败") || msg.contains("WebSocket 未连接")) return "peer_offline";
-        // 步骤 2: p2p/open
+        // p2p/open
         if (msg.contains("设备不在线")) return "peer_offline";
         if (msg.contains("p2p/open") || msg.contains("connection_id")) return "internal_error";
         return "internal_error";
