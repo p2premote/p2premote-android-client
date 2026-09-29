@@ -428,7 +428,7 @@ public final class WsConnection {
                 }
                 // 被动端回传（attempt_ready / approval_* / attempt_failed）。data 是嵌套 JSON 字符串。
                 PeerNotifyListener listener = peerNotifyListener;
-                if (listener == null || payload == null) {
+                if (listener == null) {
                     Log.d(TAG, "p2p_notify received without an attempt listener");
                     return;
                 }

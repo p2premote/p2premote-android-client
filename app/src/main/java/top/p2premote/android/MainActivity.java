@@ -1373,7 +1373,7 @@ public final class MainActivity extends Activity {
             } else {
                 membership = session.memberLevel;
             }
-            if (membership == null || membership.trim().isEmpty()) membership = "免费会员";
+            if (membership.trim().isEmpty()) membership = "免费会员";
             account.addView(helpText("会员状态：" + membership));
             if (session.isPro && !session.trialExpireTime.isEmpty()
                     && !"pro".equalsIgnoreCase(session.memberLevel)) {
@@ -1679,12 +1679,11 @@ public final class MainActivity extends Activity {
             toast("请先断开当前隧道");
             return;
         }
-        String targetPlatform = (target.type + " " + target.systemVersion)
-                .toLowerCase(java.util.Locale.ROOT);
-        boolean windowsTarget = targetPlatform.contains("windows")
-                || targetPlatform.contains("win10") || targetPlatform.contains("win 10")
-                || targetPlatform.contains("win11") || targetPlatform.contains("win 11")
-                || targetPlatform.contains("win7") || targetPlatform.contains("win 7");
+        DevicePlatform.Kind targetKind = DevicePlatform.detect(target.type, target.systemVersion);
+        boolean windowsTarget = targetKind == DevicePlatform.Kind.WINDOWS
+                || targetKind == DevicePlatform.Kind.WINDOWS_7
+                || targetKind == DevicePlatform.Kind.WINDOWS_10
+                || targetKind == DevicePlatform.Kind.WINDOWS_11;
         if (windowsTarget && !target.remoteAccessEnabled) {
             String version = target.systemVersion.toLowerCase(java.util.Locale.ROOT);
             boolean homeEdition = version.equals("home") || version.startsWith("home ")

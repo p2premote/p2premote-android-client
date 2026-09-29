@@ -66,7 +66,7 @@ final class ApiClient {
                 data.optString("release_notes"));
     }
 
-    LoginResult login(String serverUrl, String identifier, String password) throws Exception {
+    Session login(String serverUrl, String identifier, String password) throws Exception {
         JSONObject req = new JSONObject();
         req.put("identifier", identifier);
         req.put("password", password);
@@ -99,7 +99,7 @@ final class ApiClient {
                 ""
         );
         sessionStore.save(session);
-        return new LoginResult(session);
+        return session;
     }
 
     DeviceItem registerCurrentDevice(android.content.Context context) throws Exception {
@@ -530,14 +530,6 @@ final class ApiClient {
             super(message);
             this.httpStatus = httpStatus;
             this.code = code;
-        }
-    }
-
-    static final class LoginResult {
-        final Session session;
-
-        LoginResult(Session session) {
-            this.session = session;
         }
     }
 
