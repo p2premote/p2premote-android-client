@@ -53,8 +53,8 @@ android {
 def hostIsWindows = System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("windows")
 def nativeScriptCommand = { String scriptName ->
     hostIsWindows
-            ? ["powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts/$scriptName.ps1"]
-            : ["bash", "scripts/$scriptName.sh"]
+            ? ["powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts/${scriptName}.ps1"]
+            : ["bash", "scripts/${scriptName}.sh"]
 }
 
 // 测速使用独立的 Rust riperf3 JNI 库；只构建 app 时自动确保两个 ABI 都存在。
