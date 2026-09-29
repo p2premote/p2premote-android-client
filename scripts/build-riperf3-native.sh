@@ -28,9 +28,17 @@ if [[ ! -d "$ndkRoot" ]]; then
     echo "NDK $NDK_VERSION not found, using $(basename "$ndkRoot")"
 fi
 
+# NDK 官方 host tag 是小写 linux-*（uname -s 返回首字母大写的 Linux，不能直拼）
 hostTag="$(uname -s)-$(uname -m)"
-[[ "$hostTag" == Darwin-* ]] && hostTag="darwin-$(uname -m)"
+case "$hostTag" in
+    Linux-*)  hostTag="linux-${hostTag#Linux-}" ;;
+    Darwin-*) hostTag="darwin-${hostTag#Darwin-}" ;;
+esac
 toolBin="$ndkRoot/toolchains/llvm/prebuilt/$hostTag/bin"
+if [[ ! -d "$toolBin" ]]; then
+    echo "NDK toolchain bin not found: $toolBin" >&2
+    exit 1
+fi
 
 command -v cargo >/dev/null 2>&1 || { echo "cargo not found in PATH" >&2; exit 1; }
 command -v rustup >/dev/null 2>&1 || { echo "rustup not found in PATH" >&2; exit 1; }
