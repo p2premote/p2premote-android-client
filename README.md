@@ -5,10 +5,18 @@
 
 Android 是仅发起端：可以连接桌面设备，但不能接收其他设备发起的连接。
 
+## 官方链接
+
+- 官网：<https://www.p2premote.top>
+- 下载页：<https://www.p2premote.top/#download>
+- GitHub 组织：<https://github.com/p2premote>
+  - 桌面客户端：[p2premote-desktop-client](https://github.com/p2premote/p2premote-desktop-client)
+
 ## 架构
 
 - **打洞层**（`punch-native/`，Rust JNI 库 `libp2premote_punch_jni.so`）：
-  - Rust 版 gonc（`p2premote-punch-rs-gonc`）的 JNI 绑定，由 Gradle `preBuild` 自动构建
+  - Rust 版 gonc（[p2premote-punch-rs](https://github.com/p2premote/p2premote-punch-rs) 的 JNI 绑定），
+    由 Gradle `preBuild` 自动构建（需成兄弟目录检出）
   - `PunchNative`：Exchange / StartUdpTunnel / StopUdpTunnel / protect 回调
 - **WG 数据面**（`libwgmobile.aar`，gomobile 绑定，不入库）：
   - `libwgmobile`：wireguard-go userspace 绑定（WgStart / WgAddPeer / WgRemovePeer / WgStop），
@@ -23,7 +31,8 @@ Android 是仅发起端：可以连接桌面设备，但不能接收其他设备
 
 ### 1. 构建 libwgmobile AAR（首次必做）
 
-AAR 不入库（体积大、随 wireguard-go 改动频繁重生成），需先用 gomobile 构建：
+AAR 不入库（体积大、随 wireguard-go 改动频繁重生成），需先用 gomobile 构建，
+源码仓库：[p2premote-wg-ffi](https://github.com/p2premote/p2premote-wg-ffi)（需与本仓库成兄弟目录检出）：
 
 ```bash
 cd ../p2premote-wg-ffi
@@ -51,8 +60,15 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n top.p2premote.android/.MainActivity
 ```
 
+## CI 与发布
+
+推送到 main 自动触发 GitHub Actions 构建 APK（版本取 `gradle.properties` 的
+`p2premoteBaseVersion` + 短提交号）。**推送 `v*` tag（如 `v1.0.1`）会以该版本
+构建并自动发布 Release**，APK 作为 Release 资产可直接下载：
+<https://github.com/p2premote/p2premote-android-client/releases>
+
 ## 已知限制
 
 - **WG 私钥 / token 明文存储**于 SharedPreferences，与桌面端一致；加固见 `SessionStore` 注释。
 - **TUN 未配置 DNS**（`addDnsServer`）：RDP/VNC 按虚拟 IP 直连不受影响，对端 LAN 内域名暂不可解析。
-- **真机联网验证**：建链/打洞/握手的端到端验证需联网真机 + 对端桌面（见 `.codex-tasks/android-wgvpn-client/PROGRESS.md`）。
+- **真机联网验证**：建链/打洞/握手的端到端验证需联网真机 + 对端桌面。
