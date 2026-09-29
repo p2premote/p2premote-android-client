@@ -133,12 +133,22 @@ jobs:
           go-version: '1.25'
           cache-dependency-path: ../p2premote-wg-ffi/mobile/libwgmobile/go.sum
 
+      - name: Install gomobile and gobind
+        if: steps.aar-cache.outputs.cache-hit != 'true'
+        # 官方安装要求同时装 gomobile 与 gobind（bind 内部 exec gobind）。
+        # GITHUB_PATH 写入对"后续 step"持久生效，规避 run 块内 export PATH
+        # 不被子进程脚本继承的问题（build-android-aar.sh 里 command -v
+        # gomobile 失败）；本 step 内用绝对路径自检
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest golang.org/x/mobile/cmd/gobind@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gomobile" version
+
       - name: Build libwgmobile.aar
         if: steps.aar-cache.outputs.cache-hit != 'true'
         run: |
           export PATH="$PATH:$(go env GOPATH)/bin"
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          gomobile init
+          gomobile version
           ../p2premote-wg-ffi/build-android-aar.sh
 
       - name: Copy AAR into app/libs
