@@ -23,7 +23,7 @@
 #
 # 构建链路：
 #   NDK(钉版 27.0.12077973) -> [缓存命中则跳过] gomobile bind 出 libwgmobile.aar
-#   -> rust-toolchain 1.77.2（与 punch-rs 的 rust-toolchain.toml 一致）
+#   -> rust stable（本仓库无工具链钉版，Cargo.lock v4 需 cargo ≥1.83）
 #   -> gradlew assembleRelease（preBuild 自动走 scripts/*.sh 交叉编译两个
 #      Rust JNI 库到 app/src/main/jniLibs/）
 
@@ -156,9 +156,11 @@ jobs:
           mkdir -p app/libs
           cp ../p2premote-wg-ffi/libwgmobile.aar app/libs/
 
-      # 1.77.2 与 p2premote-punch-rs/rust-toolchain.toml 一致（Win7 兼容线）；
-      # 两个 Rust JNI 库由 preBuild 任务调 scripts/*.sh 自动交叉编译
-      - uses: dtolnay/rust-toolchain@1.77.2
+      # 不用 1.77.2（那是桌面端 Win7 兼容线的钉版）：本仓库无 rust-toolchain.toml，
+      # 本机默认 stable 生成的 Cargo.lock 是 v4 格式（cargo ≥1.83 才能读），
+      # CI 跟随 stable 才不会每次本地动 lock 就把 CI 搞挂；punch-rs 源码是
+      # 工具链无关的 cdylib（edition 2021），新 stable 编译无碍
+      - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
