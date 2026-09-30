@@ -51,15 +51,11 @@ final class DeviceIdentity {
      * 取不到时返回空串，由调用方回退到 Build 常量。
      */
     private static String readGlobalDeviceName() {
+        // appContext 由 MainActivity 与两个 Service 的 onCreate 显式注入
+        // （START_STICKY 重建场景由 Service 覆盖）；未注入时回退 Build 常量。
+        android.content.Context ctx = appContext;
+        if (ctx == null) return "";
         try {
-            android.content.Context ctx = appContext;
-            if (ctx == null) {
-                // 兜底：尝试通过 ActivityThread 获取应用上下文（仅主进程有效）。
-                java.lang.reflect.Method m = Class.forName("android.app.ActivityThread")
-                        .getMethod("currentApplication");
-                ctx = (android.content.Context) m.invoke(null);
-            }
-            if (ctx == null) return "";
             return Settings.Global.getString(ctx.getContentResolver(), Settings.Global.DEVICE_NAME);
         } catch (Throwable ignored) {
             return "";

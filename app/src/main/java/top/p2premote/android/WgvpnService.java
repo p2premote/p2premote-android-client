@@ -260,6 +260,9 @@ public final class WgvpnService extends VpnService {
     @Override
     public void onCreate() {
         super.onCreate();
+        // START_STICKY 进程重建不经 MainActivity，Service 侧必须自行注入应用上下文，
+        // 否则重建后 deviceName() 读不到系统设备名（审计 B-13）。
+        DeviceIdentity.init(getApplicationContext());
         sessionStore = new SessionStore(this);
         apiClient = new ApiClient(sessionStore);
         ensureChannel();

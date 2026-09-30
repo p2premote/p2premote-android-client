@@ -48,6 +48,9 @@ public final class PresenceService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        // START_STICKY 进程重建不经 MainActivity，Service 侧必须自行注入应用上下文，
+        // 否则重建后 deviceName() 读不到系统设备名（审计 B-13）。
+        DeviceIdentity.init(getApplicationContext());
         sessionStore = new SessionStore(this);
         ensureChannel();
         // 注册状态回调：WsConnection 连接状态变化时更新通知栏 + 广播 UI。
