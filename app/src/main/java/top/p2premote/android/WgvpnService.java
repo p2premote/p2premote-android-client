@@ -186,6 +186,8 @@ public final class WgvpnService extends VpnService {
     /** 最近一次 health 握手失败的人读原因（协议版本不兼容等），供测速入口透传。 */
     private volatile String healthFailReason = "";
     private volatile java.net.Socket healthSocket = null;
+    /** TCP 已连接且 Hello/HelloAck 已成功；测速只能复用处于此状态的控制连接。 */
+    private volatile boolean healthHandshakeReady = false;
     private Thread healthClientThread = null;
     private volatile long lastHealthSuccessElapsedMs = 0;
     /** 主动端用单调时钟最近一次测得的隧道 RTT；-1 表示尚无有效样本。 */
@@ -1415,6 +1417,7 @@ public final class WgvpnService extends VpnService {
         while (healthClientRunning) {
             java.net.Socket socket = null;
             try {
+                healthHandshakeReady = false;
                 socket = new java.net.Socket();
                 socket.connect(new java.net.InetSocketAddress(peerVirtualIp, HEALTH_PORT),
                         HEALTH_CONNECT_TIMEOUT_SEC * 1000);
@@ -1436,15 +1439,14 @@ public final class WgvpnService extends VpnService {
                 JSONObject ack = new JSONObject(new String(ackBytes, java.nio.charset.StandardCharsets.UTF_8));
                 if (!"HelloAck".equals(ack.optString("t", ""))) {
                     Log.w(TAG, "health unexpected hello ack: " + ack);
-                    break;
+                    throw new java.io.IOException("健康通道握手响应无效：" + ack);
                 }
                 JSONObject ackC = ack.optJSONObject("c");
                 // 兼容性握手：只要求对端明确 ok 且版本不低于下限；不设上限
                 // （本端消息集为 v3 基线，向上兼容新增字段/消息；未知消息忽略）。
                 if (ackC == null || !ackC.optBoolean("ok", false)) {
-                    healthFailReason = "健康通道握手被拒：" + ack;
                     Log.w(TAG, "health hello ack rejected: " + ack);
-                    break;
+                    throw new java.io.IOException("健康通道握手被拒：" + ack);
                 }
                 int remoteVersion = ackC.optInt("protocol_version", 0);
                 if (remoteVersion > 0 && remoteVersion < TUNNEL_CONTROL_PROTOCOL_MIN_COMPAT) {
@@ -1452,13 +1454,14 @@ public final class WgvpnService extends VpnService {
                             + "，本端要求 ≥ v" + TUNNEL_CONTROL_PROTOCOL_MIN_COMPAT
                             + "），请升级对端客户端后重试";
                     Log.w(TAG, "health hello ack protocol too old: " + ack);
-                    break;
+                    throw new java.io.IOException(healthFailReason);
                 }
                 if (remoteVersion > TUNNEL_CONTROL_PROTOCOL_VERSION) {
                     Log.i(TAG, "health handshake ok with peer protocol v" + remoteVersion
                             + " (local v" + TUNNEL_CONTROL_PROTOCOL_VERSION + ", compatible)");
                 }
                 healthFailReason = "";
+                healthHandshakeReady = true;
                 Log.i(TAG, "health handshake ok, starting heartbeat");
                 tunnelLatencyMs = -1;
                 emitStatusOnly();
@@ -1534,6 +1537,7 @@ public final class WgvpnService extends VpnService {
                     Log.w(TAG, "health client error (will reconnect): " + e.getMessage());
                 }
             } finally {
+                healthHandshakeReady = false;
                 if (socket != null) {
                     try { socket.close(); } catch (Exception ignored) {}
                 }
@@ -1576,10 +1580,10 @@ public final class WgvpnService extends VpnService {
 
     /** 从 UI 收到测速请求后，交给 health 线程串行执行，避免并发读写控制连接。 */
     private void startSpeedTest() {
-        // healthSocket==null 说明心跳尚未握手成功（重连退避中）：直接报具体
-        // 原因，避免测速请求挂在 pending 里等满 60s 才超时。
+        // TCP connect 早于 HelloAck，必须确认握手完成；否则测速任务可能被投递给
+        // 即将关闭的连接，并一直等到总超时。
         if (!TunnelState.CONNECTED.equals(activeState) || peerVirtualIp.isEmpty()
-                || !healthClientRunning || healthSocket == null) {
+                || !healthClientRunning || healthSocket == null || !healthHandshakeReady) {
             String reason = healthFailReason == null || healthFailReason.isEmpty()
                     ? "隧道未连接或健康通道尚未就绪"
                     : healthFailReason;
@@ -1751,6 +1755,7 @@ public final class WgvpnService extends VpnService {
      */
     private void stopHealthClient() {
         healthClientRunning = false;
+        healthHandshakeReady = false;
         failPendingSpeedTest("健康通道已断开，测速已取消");
         java.net.Socket socket = healthSocket;
         if (socket != null && !socket.isClosed()) {
