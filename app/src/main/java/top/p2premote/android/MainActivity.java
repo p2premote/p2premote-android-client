@@ -97,13 +97,19 @@ public final class MainActivity extends Activity {
     /** 当前隧道测速是否正在执行；由测速结果广播复位。 */
     private boolean speedTesting = false;
 
-    // 连接页局部刷新：结构变化才整页重建，否则只 setText 动态字段（时长/流量），
+    // 连接页局部刷新：结构变化才整页重建，否则只 setText 动态字段（时长/流量/建立中省略号），
     // 避免每秒 removeAllViews 重建整页造成的 GC 抖动与潜在闪烁。
     private String connectPageSignature = "";
     private TextView durationView;
     private TextView trafficDownView;
     private TextView trafficUpView;
     private TextView latencyView;
+    /** 建立中状态行的阶段消息 TextView（局部刷新用，整页重建时置 null）。 */
+    private TextView connectingMessageView;
+    /** 建立中省略号当前帧号，帧内容见 {@link #CONNECTING_DOTS}。 */
+    private int connectingDotsFrame = 0;
+    /** 建立中省略号帧（对齐桌面 useConnectingDots：'.' → '..' → '...' 每秒一帧循环）。 */
+    private static final String[] CONNECTING_DOTS = {".", "..", "..."};
     // B1：状态切换时按钮背景色平滑过渡。记录上一帧按钮色，重建后跑 ArgbEvaluator 动画。
     private int lastConnectBtnColor = 0;
     private Button connectBtn;
@@ -128,9 +134,15 @@ public final class MainActivity extends Activity {
     private final Runnable connectedDurationTicker = new Runnable() {
         @Override
         public void run() {
-            if (TunnelState.CONNECTED.equals(currentTunnelState) && currentPage == PAGE_CONNECT) {
-                // 每秒变化的只有时长；不要进入通用 render 流程，否则会重复触发布局并
-                // 在 contentRoot 尾部不断追加 spacer，造成页面闪烁和高度持续增长。
+            boolean connectPage = currentPage == PAGE_CONNECT;
+            boolean establishing = isEstablishing();
+            if (connectPage
+                    && (TunnelState.CONNECTED.equals(currentTunnelState) || establishing)) {
+                // 每秒变化的只有时长与建立中省略号；不要进入通用 render 流程，否则会重复
+                // 触发布局并在 contentRoot 尾部不断追加 spacer，造成页面闪烁和高度持续增长。
+                if (establishing) {
+                    connectingDotsFrame = (connectingDotsFrame + 1) % CONNECTING_DOTS.length;
+                }
                 updateConnectDynamicTexts();
                 mainHandler.postDelayed(this, 1000L);
             }
@@ -908,7 +920,8 @@ public final class MainActivity extends Activity {
             connectPageSignature = "";
             renderProfilePage();
         }
-        if (TunnelState.CONNECTED.equals(currentTunnelState) && currentPage == PAGE_CONNECT) {
+        if ((TunnelState.CONNECTED.equals(currentTunnelState) || isEstablishing())
+                && currentPage == PAGE_CONNECT) {
             mainHandler.postDelayed(connectedDurationTicker, 1000L);
         }
         // 连接页签名未变化时只做局部文本刷新，不应再次追加 View。
@@ -932,6 +945,7 @@ public final class MainActivity extends Activity {
         trafficDownView = null;
         trafficUpView = null;
         latencyView = null;
+        connectingMessageView = null;
         int prevColor = lastConnectBtnColor;
         connectBtn = null;
         connectBtnColor = 0;
@@ -983,7 +997,21 @@ public final class MainActivity extends Activity {
                 + "|" + (hasFailureMessage() ? 1 : 0)
                 + "|" + tcpRetryRecommended + "|" + selectedNetwork
                 + "|" + (TunnelState.DEGRADED.equals(currentTunnelState)
-                ? currentTunnelMessage : "");
+                ? currentTunnelMessage : "")
+                // 建立中阶段消息随打洞推进逐条变化（同状态内也有多条），必须进签名触发重建。
+                + "|" + (isEstablishing() ? currentTunnelMessage : "");
+    }
+
+    /** 是否处于建立隧道过程中（含请求 VPN 权限与等待对方同意；不含已连接与断线恢复）。 */
+    private boolean isEstablishing() {
+        return TunnelState.isActive(currentTunnelState)
+                && !TunnelState.CONNECTED.equals(currentTunnelState)
+                && !TunnelState.DEGRADED.equals(currentTunnelState);
+    }
+
+    /** 建立中状态行文案：优先用当前阶段消息（WgvpnService 各阶段 emit），空则兜底。 */
+    private String establishingMessage() {
+        return currentTunnelMessage.isEmpty() ? "正在连接对方设备" : currentTunnelMessage;
     }
 
     /** 失败/取消状态下是否有需要展示的文案。 */
@@ -993,10 +1021,13 @@ public final class MainActivity extends Activity {
                 || TunnelState.ABORTED.equals(currentTunnelState));
     }
 
-    /** 仅更新时长与流量文本，由 renderConnectPage 在签名稳定时调用。 */
+    /** 仅更新时长、流量与建立中省略号文本，由 ticker / renderConnectPage 在签名稳定时调用。 */
     private void updateConnectDynamicTexts() {
         if (durationView != null && connectedAtMs > 0) {
             durationView.setText("已连接 " + formatDuration(System.currentTimeMillis() - connectedAtMs));
+        }
+        if (connectingMessageView != null) {
+            connectingMessageView.setText(establishingMessage() + CONNECTING_DOTS[connectingDotsFrame]);
         }
         boolean connected = TunnelState.CONNECTED.equals(currentTunnelState);
         if (trafficDownView != null) {
@@ -1134,6 +1165,18 @@ public final class MainActivity extends Activity {
                 wrap.addView(helpText("可访问网段：" + exposedLan));
             }
             if (!selectedNetwork.isEmpty()) wrap.addView(helpText("隧道传输协议：" + selectedNetwork.toUpperCase(java.util.Locale.ROOT)));
+        } else if (isEstablishing()) {
+            // 建立隧道中：对齐桌面端 lifecycle strip——「取消连接」按钮上方展示状态 chip
+            // + 阶段消息 + 滚动省略号（打洞单阶段可达十几秒且界面无其他变化，省略号
+            // 让用户确认客户端没有卡死）。
+            LinearLayout statusRow = horizontal();
+            statusRow.addView(statusChip("建立隧道中", 0xFF2563EB),
+                    new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT));
+            connectingMessageView = body(establishingMessage() + CONNECTING_DOTS[connectingDotsFrame]);
+            connectingMessageView.setPadding(dp(10), 0, 0, 0);
+            statusRow.addView(connectingMessageView);
+            wrap.addView(statusRow);
         } else if (!currentTunnelMessage.isEmpty()
                 && (TunnelState.FAILED.equals(currentTunnelState)
                 || TunnelState.ABORTED.equals(currentTunnelState)
