@@ -66,9 +66,3 @@ adb shell am start -n top.p2premote.android/.MainActivity
 `p2premoteBaseVersion` + 短提交号）。**推送 `v*` tag（如 `v1.0.1`）会以该版本
 构建并自动发布 Release**，APK 作为 Release 资产可直接下载：
 <https://github.com/p2premote/p2premote-android-client/releases>
-
-## 已知限制
-
-- **WG 私钥 / token 明文存储**于 SharedPreferences，与桌面端一致；加固见 `SessionStore` 注释。
-- **TUN 未配置 DNS**（`addDnsServer`）：RDP/VNC 按虚拟 IP 直连不受影响，对端 LAN 内域名暂不可解析。
-- **真机联网验证**：建链/打洞/握手的端到端验证需联网真机 + 对端桌面。
