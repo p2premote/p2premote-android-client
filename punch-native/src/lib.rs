@@ -37,12 +37,7 @@ fn protect_via_jni(vm: &JavaVM, callback: &GlobalRef, fd: i32) -> bool {
         Ok(env) => env,
         Err(_) => return false,
     };
-    let result = env.call_method(
-        callback.as_obj(),
-        "protect",
-        "(I)Z",
-        &[JValue::Int(fd)],
-    );
+    let result = env.call_method(callback.as_obj(), "protect", "(I)Z", &[JValue::Int(fd)]);
     match result {
         Ok(jni::objects::JValueOwned::Bool(ok)) => ok != 0,
         _ => false,
@@ -80,7 +75,10 @@ fn read_jstring(env: &mut JNIEnv, value: &JString) -> Result<String, String> {
 }
 
 fn err_json(message: String) -> String {
-    format!(r#"{{"ok":false,"error":{}}}"#, serde_json::Value::String(message))
+    format!(
+        r#"{{"ok":false,"error":{}}}"#,
+        serde_json::Value::String(message)
+    )
 }
 
 #[no_mangle]
@@ -104,7 +102,10 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeSetProtectCa
         let _ = method_id;
         let global = env.new_global_ref(&callback).map_err(jni_err)?;
         let vm = env.get_java_vm().map_err(jni_err)?;
-        *PROTECT_STATE.lock().unwrap() = Some(ProtectState { vm, callback: global });
+        *PROTECT_STATE.lock().unwrap() = Some(ProtectState {
+            vm,
+            callback: global,
+        });
         p2premote_punch::easyp2p::socketprotect::set_socket_protect(Some(Box::new(|fd| {
             let guard = PROTECT_STATE.lock().unwrap();
             match guard.as_ref() {
@@ -120,7 +121,10 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeSetProtectCa
             let _ = env.throw_new("java/lang/RuntimeException", message);
         }
         Err(_) => {
-            let _ = env.throw_new("java/lang/RuntimeException", "internal error: punch library panicked");
+            let _ = env.throw_new(
+                "java/lang/RuntimeException",
+                "internal error: punch library panicked",
+            );
         }
     }
 }
@@ -187,9 +191,14 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeStartUdpTunn
 ) -> jstring {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let request_json: String = read_jstring(&mut env, &request_json)?;
-        let request: p2premote_punch::types::UdpTunnelInput = serde_json::from_str(&request_json)
-            .map_err(|err| format!("invalid request json: {err}"))?;
-        let timeout = if request.timeout_secs <= 0 { 45 } else { request.timeout_secs };
+        let request: p2premote_punch::types::UdpTunnelInput =
+            serde_json::from_str(&request_json)
+                .map_err(|err| format!("invalid request json: {err}"))?;
+        let timeout = if request.timeout_secs <= 0 {
+            45
+        } else {
+            request.timeout_secs
+        };
         block_on_blocking(p2premote_punch::api::start_udp_tunnel(
             request,
             Duration::from_secs(timeout as u64 + 10),
@@ -235,7 +244,10 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeStopUdpTunne
             0
         }
         Err(_) => {
-            let _ = env.throw_new("java/lang/RuntimeException", "internal error: punch library panicked");
+            let _ = env.throw_new(
+                "java/lang/RuntimeException",
+                "internal error: punch library panicked",
+            );
             0
         }
     }
@@ -249,7 +261,8 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeDetectNat(
 ) -> jstring {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on_blocking(p2premote_punch::api::detect_nat(
-            &["udp4", "udp6", "tcp4", "tcp6"], Duration::from_secs(6),
+            &["udp4", "udp6", "tcp4", "tcp6"],
+            Duration::from_secs(6),
         ))
     }));
     let output = match result {

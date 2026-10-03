@@ -20,7 +20,12 @@ fn server_upload_bps(server_output: Option<&Value>) -> Option<f64> {
         .and_then(Value::as_f64)
 }
 
-async fn run_client(host: &str, port: u16, duration_secs: u32, reverse: bool) -> Result<String, String> {
+async fn run_client(
+    host: &str,
+    port: u16,
+    duration_secs: u32,
+    reverse: bool,
+) -> Result<String, String> {
     let peer: SocketAddr = format!("{host}:{port}")
         .parse()
         .map_err(|err| format!("invalid peer address: {err}"))?;
@@ -47,8 +52,10 @@ async fn run_client(host: &str, port: u16, duration_secs: u32, reverse: bool) ->
     let mbps = if reverse {
         bps_to_mbps(end.sum_received.as_ref().map(|stats| stats.bits_per_second))
     } else {
-        bps_to_mbps(server_upload_bps(report.server_output_json.as_ref())
-            .or_else(|| end.sum_sent.as_ref().map(|stats| stats.bits_per_second)))
+        bps_to_mbps(
+            server_upload_bps(report.server_output_json.as_ref())
+                .or_else(|| end.sum_sent.as_ref().map(|stats| stats.bits_per_second)),
+        )
     };
     Ok(json!({
         "mbps": mbps,
@@ -80,11 +87,19 @@ pub extern "system" fn Java_top_p2premote_android_Riperf3Native_nativeRunClient(
         Ok(value) => value.into(),
         Err(err) => return throw_and_null(env, format!("read peer host failed: {err}")),
     };
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(err) => return throw_and_null(env, format!("create runtime failed: {err}")),
     };
-    let output = match runtime.block_on(run_client(&host, port as u16, duration_secs as u32, reverse != 0)) {
+    let output = match runtime.block_on(run_client(
+        &host,
+        port as u16,
+        duration_secs as u32,
+        reverse != 0,
+    )) {
         Ok(value) => value,
         Err(err) => return throw_and_null(env, err),
     };
