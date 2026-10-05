@@ -62,6 +62,7 @@ public final class MainActivity extends Activity {
     private static final int SCREEN_FORCE_UPDATE = 5;
     private static final String DEFAULT_SERVER_URL = "https://cli.p2premote.top";
     private static final String CLIENT_DOWNLOAD_PAGE_URL = "https://www.p2premote.top/#download";
+    private static final String SYMMETRIC_NAT_HELP_URL = "https://www.p2premote.top/zh/docs/improve-p2p-success";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -84,6 +85,7 @@ public final class MainActivity extends Activity {
     private String currentTunnelState = TunnelState.IDLE;
     private String currentTunnelMessage = "";
     private boolean tcpRetryRecommended;
+    private boolean symmetricNatHelpRecommended;
     private String selectedNetwork = "";
     private String peerVirtualIp = "";
     private String exposedLan = "";
@@ -196,6 +198,7 @@ public final class MainActivity extends Activity {
             currentTunnelState = safe(intent.getStringExtra(WgvpnService.EXTRA_STATE));
             currentTunnelMessage = safe(intent.getStringExtra(WgvpnService.EXTRA_MESSAGE));
             tcpRetryRecommended = intent.getBooleanExtra(WgvpnService.EXTRA_TCP_RETRY, false);
+            symmetricNatHelpRecommended = intent.getBooleanExtra(WgvpnService.EXTRA_SYMMETRIC_NAT_HELP, false);
             selectedNetwork = safe(intent.getStringExtra(WgvpnService.EXTRA_NETWORK));
             peerVirtualIp = safe(intent.getStringExtra(WgvpnService.EXTRA_PEER_VIRTUAL_IP));
             exposedLan = safe(intent.getStringExtra(WgvpnService.EXTRA_EXPOSED_LAN));
@@ -995,7 +998,7 @@ public final class MainActivity extends Activity {
                 + "|" + (exposedLan.isEmpty() ? 0 : 1)
                 + "|" + (speedTesting ? 1 : 0)
                 + "|" + (hasFailureMessage() ? 1 : 0)
-                + "|" + tcpRetryRecommended + "|" + selectedNetwork
+                + "|" + tcpRetryRecommended + "|" + symmetricNatHelpRecommended + "|" + selectedNetwork
                 + "|" + (TunnelState.DEGRADED.equals(currentTunnelState)
                 ? currentTunnelMessage : "")
                 // 建立中阶段消息随打洞推进逐条变化（同状态内也有多条），必须进签名触发重建。
@@ -1191,6 +1194,13 @@ public final class MainActivity extends Activity {
                     if (target != null) startTunnelFlow(target);
                 });
                 wrap.addView(retry);
+            }
+            if (symmetricNatHelpRecommended && TunnelState.FAILED.equals(currentTunnelState)) {
+                wrap.addView(helpText("检测到对称型 NAT，当前网络可能限制 P2P 直连。"));
+                Button help = outlineButton("查看网络优化帮助", 0xFF2563EB);
+                help.setOnClickListener(v -> startActivity(new Intent(Intent.ACTION_VIEW,
+                        android.net.Uri.parse(SYMMETRIC_NAT_HELP_URL))));
+                wrap.addView(help);
             }
         }
         wrap.addView(btn);

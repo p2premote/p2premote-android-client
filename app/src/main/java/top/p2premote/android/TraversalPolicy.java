@@ -22,6 +22,11 @@ final class TraversalPolicy {
         }
         return false;
     }
+
+    static boolean symmetricNatHelpRecommended(String errorCode, String localNatType, String remoteNatType) {
+        return "hole_punch_wait_timeout".equals(errorCode)
+                && ("symm".equalsIgnoreCase(localNatType) || "symm".equalsIgnoreCase(remoteNatType));
+    }
     static List<String> plan(boolean ipv6, boolean tcp, List<Evidence> local, List<Evidence> remote,
                              Boolean localIpv6, Boolean remoteIpv6) {
         String[] order = tcp

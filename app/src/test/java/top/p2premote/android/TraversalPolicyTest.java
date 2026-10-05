@@ -66,4 +66,10 @@ public class TraversalPolicyTest {
         assertEquals("", TraversalPolicy.udp4NatType(Arrays.asList(nat("udp4", "unknown"))));
         assertEquals("", TraversalPolicy.udp4NatType(Collections.<TraversalPolicy.Evidence>emptyList()));
     }
+    @Test public void symmetricNatHelpRequiresNetworkPunchFailure() {
+        assertTrue(TraversalPolicy.symmetricNatHelpRecommended("hole_punch_wait_timeout", "symm", "easy"));
+        assertTrue(TraversalPolicy.symmetricNatHelpRecommended("hole_punch_wait_timeout", "hard", "SYMM"));
+        assertFalse(TraversalPolicy.symmetricNatHelpRecommended("internal_error", "symm", "symm"));
+        assertFalse(TraversalPolicy.symmetricNatHelpRecommended("hole_punch_wait_timeout", "hard", "easy"));
+    }
 }

@@ -80,6 +80,7 @@ public final class WgvpnService extends VpnService {
     static final String EXTRA_STATE = "state";
     static final String EXTRA_MESSAGE = "message";
     static final String EXTRA_TCP_RETRY = "tcp_retry_recommended";
+    static final String EXTRA_SYMMETRIC_NAT_HELP = "symmetric_nat_help_recommended";
     static final String EXTRA_NETWORK = "network";
     static final String EXTRA_VIRTUAL_IP = "virtual_ip";
     static final String EXTRA_PEER_VIRTUAL_IP = "peer_virtual_ip";
@@ -165,6 +166,7 @@ public final class WgvpnService extends VpnService {
     private volatile String activeState = TunnelState.IDLE;
     private volatile String activeMessage = "";
     private volatile boolean tcpRetryRecommended;
+    private volatile boolean symmetricNatHelpRecommended;
     private volatile String selectedNetwork = "";
     private volatile String myVirtualIp = "";
     private volatile String peerVirtualIp = "";
@@ -748,6 +750,7 @@ public final class WgvpnService extends VpnService {
                     targetDeviceUuid, "online", "", "", 3389);
             try {
                 tcpRetryRecommended = false;
+                symmetricNatHelpRecommended = false;
                 selectedNetwork = "";
                 DiagLog.i(TAG, "==== connect session start target=" + targetName + "(" + targetDeviceId + ")"
                         + (automaticRecovery ? " mode=auto-recovery" : ""));
@@ -1159,6 +1162,10 @@ public final class WgvpnService extends VpnService {
                     return;
                 }
                 tcpRetryRecommended = TraversalPolicy.tcpRetryRecommended(connectionPreferences.tcp, msg);
+                symmetricNatHelpRecommended = TraversalPolicy.symmetricNatHelpRecommended(
+                        errorCode,
+                        traversal != null ? traversal.localNatType() : "",
+                        traversal != null ? traversal.remoteNatType() : "");
                 if (tcpRetryRecommended) msg += "\n已开启 TCP 优先，建议关闭后重试。";
                 emit(TunnelState.FAILED, msg, "", "", "");
                 // stopForeground(false)：退下前台服务，但保留 FAILED 通知，让用户看到真实失败原因。
@@ -1293,6 +1300,9 @@ public final class WgvpnService extends VpnService {
         if (msg.contains("WireGuard 启动")) return "wireguard_config_failed";
         if (msg.contains("虚拟网卡") || msg.contains("VpnService")) return "wireguard_config_failed";
         // P2P 打洞 / 转发端口
+        if (msg.startsWith("punch_exhausted:") || msg.contains("traversal_signal_timeout")) {
+            return "hole_punch_wait_timeout";
+        }
         if (msg.contains("gonc 未返回")) return "hole_punch_wait_timeout";
         if (msg.contains("P2P 打洞")) return "hole_punch_wait_timeout";
         // 密钥交换（数据校验失败归 internal，仅交换失败归打洞）
@@ -1990,6 +2000,7 @@ public final class WgvpnService extends VpnService {
         update.putExtra(EXTRA_STATE, state);
         update.putExtra(EXTRA_MESSAGE, message);
         update.putExtra(EXTRA_TCP_RETRY, tcpRetryRecommended);
+        update.putExtra(EXTRA_SYMMETRIC_NAT_HELP, symmetricNatHelpRecommended);
         update.putExtra(EXTRA_NETWORK, selectedNetwork);
         update.putExtra(EXTRA_VIRTUAL_IP, myVirtualIp);
         update.putExtra(EXTRA_PEER_VIRTUAL_IP, peerVirtualIp);
