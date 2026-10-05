@@ -1,68 +1,81 @@
-# p2pRemote Android
+# p2pRemote Android Client
 
-基于 wgvpn 架构的 Android 客户端：通过 Android `VpnService` 建立虚拟网卡，
-运行 userspace WireGuard + gonc 加密 UDP 数据面，实现与桌面端一致的三层 VPN 隧道。
+English | [简体中文](README_zh.md)
 
-Android 是仅发起端：可以连接桌面设备，但不能接收其他设备发起的连接。
+The p2pRemote Android client uses the wgvpn architecture and creates a virtual network interface through Android's `VpnService`. It runs userspace WireGuard and carries traffic over the gonc encrypted UDP data plane, providing the same layer-3 VPN tunnel as the desktop client.
 
-## 官方链接
+The Android client can only initiate connections. It can connect to desktop devices but cannot accept connections from other devices.
 
-- 官网：<https://www.p2premote.top>
-- 下载页：<https://www.p2premote.top/#download>
-- GitHub 组织：<https://github.com/p2premote>
-  - 桌面客户端：[p2premote-desktop-client](https://github.com/p2premote/p2premote-desktop-client)
+## Official Links
 
-## 架构
+- Website: <https://www.p2premote.top>
+- Downloads: <https://www.p2premote.top/#download>
+- GitHub organization: <https://github.com/p2premote>
+  - Desktop client: [p2premote-desktop-client](https://github.com/p2premote/p2premote-desktop-client)
 
-- **打洞层**（`punch-native/`，Rust JNI 库 `libp2premote_punch_jni.so`）：
-  - Rust 版 gonc（[p2premote-punch-rs](https://github.com/p2premote/p2premote-punch-rs) 的 JNI 绑定），
-    由 Gradle `preBuild` 自动构建（需成兄弟目录检出）
-  - `PunchNative`：Exchange / StartUdpTunnel / StopUdpTunnel / protect 回调
-- **WG 数据面**（`libwgmobile.aar`，gomobile 绑定，不入库）：
-  - `libwgmobile`：wireguard-go userspace 绑定（WgStart / WgAddPeer / WgRemovePeer / WgStop），
-    源码位于 `p2premote-wg-ffi/mobile/libwgmobile`
-- **应用层**：
-  - `WgvpnService`：VpnService + ForegroundService，完整 9 步 active 建链 / 断链清理 / protect 回调 / 状态广播
-  - `MainActivity`：VPN 授权流程 + 虚拟 IP 展示 + 隧道状态机
-- **minSdk 29**（Android 10）：系统原生 TLS 1.3，无需 Conscrypt 兼容层
-- **ABI**：arm64-v8a + x86_64
+## Architecture
 
-## 构建
+### NAT Traversal Layer
 
-### 1. 构建 libwgmobile AAR（首次必做）
+`punch-native/` provides the Rust JNI library `libp2premote_punch_jni.so`, which wraps the Rust version of gonc. It depends on [p2premote-punch-rs](https://github.com/p2premote/p2premote-punch-rs). Check out that repository alongside this one. Gradle's `preBuild` task builds the JNI library automatically.
 
-AAR 不入库（体积大、随 wireguard-go 改动频繁重生成），需先用 gomobile 构建，
-源码仓库：[p2premote-wg-ffi](https://github.com/p2premote/p2premote-wg-ffi)（需与本仓库成兄弟目录检出）：
+`PunchNative` provides Exchange, StartUdpTunnel, StopUdpTunnel, and the protect callback.
+
+### WireGuard Data Plane
+
+`libwgmobile.aar` uses gomobile bindings for the wireguard-go userspace implementation. The AAR is not checked into the repository and must be built locally.
+
+`libwgmobile` provides WgStart, WgAddPeer, WgRemovePeer, and WgStop. Its source is in `p2premote-wg-ffi/mobile/libwgmobile`.
+
+### Application Layer
+
+- `WgvpnService`: combines VpnService and ForegroundService to run the 9-step outgoing connection flow. It also handles cleanup on disconnect, protect callbacks, and state broadcasts.
+- `MainActivity`: handles VPN authorization, displays the virtual IP address, and manages the tunnel state machine.
+
+## System Requirements
+
+- Minimum version: minSdk 29 (Android 10). The system supports TLS 1.3 natively, so no Conscrypt compatibility layer is required.
+- Supported ABIs: arm64-v8a and x86_64.
+
+## Building
+
+### 1. Build the libwgmobile AAR
+
+Before building the APK for the first time, you must generate `libwgmobile.aar`. The file is large and needs to be regenerated when wireguard-go changes, so it is not checked into the repository.
+
+Check out [p2premote-wg-ffi](https://github.com/p2premote/p2premote-wg-ffi) alongside this repository. Building requires Go 1.25+, gomobile, and the Android NDK, with `ANDROID_HOME` configured. See the build script's header comments for details.
+
+From this repository's root directory, run these commands to build the AAR with gomobile and copy it into the application's dependency directory:
 
 ```bash
 cd ../p2premote-wg-ffi
 ./build-android-aar.sh
-# 产物：p2premote-wg-ffi/libwgmobile.aar
+# Output: p2premote-wg-ffi/libwgmobile.aar
 cp libwgmobile.aar ../p2premote-android-client/app/libs/libwgmobile.aar
 ```
 
-前置依赖：Go 1.25+、gomobile、Android NDK、`ANDROID_HOME` 已配置。详见脚本头部说明。
+### 2. Build the APK
 
-### 2. 构建 APK
+Make sure the AAR is in the application's dependency directory as described above. The `preBuild` task cross-compiles the NAT traversal JNI library automatically using `scripts/build-punch-native.ps1`. This requires Rust and the Android NDK.
 
-打洞层 Rust JNI 库由 `preBuild` 任务自动交叉编译（`scripts/build-punch-native.ps1`，
-需要 Rust + Android NDK）；WG AAR 按上一步手动放置后：
+From the parent directory containing these repositories, run:
 
 ```bash
 cd p2premote-android-client
 ./gradlew assembleDebug
 ```
 
-## 运行
+## Running
+
+From this repository's root directory, install and launch the application:
 
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n top.p2premote.android/.MainActivity
 ```
 
-## CI 与发布
+## CI and Releases
 
-推送到 main 自动触发 GitHub Actions 构建 APK（版本取 `gradle.properties` 的
-`p2premoteBaseVersion` + 短提交号）。**推送 `v*` tag（如 `v1.0.1`）会以该版本
-构建并自动发布 Release**，APK 作为 Release 资产可直接下载：
-<https://github.com/p2premote/p2premote-android-client/releases>
+Pushing to the main branch triggers an APK build in GitHub Actions. The version combines `p2premoteBaseVersion` from `gradle.properties` with the short commit hash.
+
+Pushing a `v*` tag, such as `v1.0.1`, builds that version and publishes a release automatically. Download the APK from the [Releases page](https://github.com/p2premote/p2premote-android-client/releases).
