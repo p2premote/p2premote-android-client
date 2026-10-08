@@ -122,7 +122,9 @@ final class TraversalClient implements AutoCloseable {
         JSONArray bounded = new JSONArray();
         for (int i = 0; i < Math.min(local.length(), 32); i++) bounded.put(local.getJSONObject(i));
         Boolean ipv6 = ipv6Availability.get();
-        JSONObject capabilities = frame("capabilities", 0).put("evidence", bounded).put("ipv6_gate_supported", true);
+        JSONObject capabilities = frame("capabilities", 0).put("evidence", bounded)
+                .put("ipv6_gate_supported", true)
+                .put("lan_probe_budget_secs", TraversalPolicy.LAN_PROBE_BUDGET_SECS);
         if (ipv6 != null) capabilities.put("ipv6_available", ipv6);
         send(capabilities);
         JSONObject remoteCapabilities = waitFrame(0, "capabilities");
@@ -135,6 +137,22 @@ final class TraversalClient implements AutoCloseable {
         Object gateValue = remoteCapabilities.opt("ipv6_gate_supported");
         if (gateValue != null && !(gateValue instanceof Boolean)) throw new IllegalStateException("invalid_traversal_capabilities");
         boolean remoteGate = Boolean.TRUE.equals(gateValue);
+        Object remoteLanBudgetValue = remoteCapabilities.opt("lan_probe_budget_secs");
+        Integer remoteLanBudget = null;
+        if (remoteLanBudgetValue != null && remoteLanBudgetValue != JSONObject.NULL) {
+            if (!(remoteLanBudgetValue instanceof Number)
+                    || ((Number) remoteLanBudgetValue).doubleValue()
+                    != ((Number) remoteLanBudgetValue).intValue()) {
+                throw new IllegalStateException("invalid_lan_probe_budget");
+            }
+            remoteLanBudget = ((Number) remoteLanBudgetValue).intValue();
+        }
+        int lanProbeBudgetSecs = TraversalPolicy.negotiateLanProbeBudget(
+                TraversalPolicy.LAN_PROBE_BUDGET_SECS, remoteLanBudget);
+        DiagLog.i(TAG, "LAN probe budget local=" + TraversalPolicy.LAN_PROBE_BUDGET_SECS
+                + " remote=" + (remoteLanBudget == null
+                ? TraversalPolicy.LEGACY_LAN_PROBE_BUDGET_SECS : remoteLanBudget)
+                + " negotiated=" + lanProbeBudgetSecs);
         List<TraversalPolicy.Evidence> localEvidence = evidence(bounded);
         List<TraversalPolicy.Evidence> remoteEvidence = evidence(remote);
         localNatType = TraversalPolicy.udp4NatType(localEvidence);
@@ -161,7 +179,7 @@ final class TraversalClient implements AutoCloseable {
             check.run();
             int round = i + 1;
             String network = rounds.get(i), mode = i == 0 ? "lan" : "internet";
-            int seconds = i == 0 ? 6 : 30;
+            int seconds = i == 0 ? lanProbeBudgetSecs : 30;
             String token = UUID.randomUUID().toString();
             send(frame("prepare", round).put("network", network).put("mode", mode).put("token", token).put("timeout_secs", seconds));
             waitFrame(round, "ready");

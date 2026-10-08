@@ -6,6 +6,8 @@ import java.util.List;
 /** Application policy shared with desktop; actual probing remains in gonc. */
 final class TraversalPolicy {
     static final int VERSION = 2;
+    static final int LAN_PROBE_BUDGET_SECS = 1;
+    static final int LEGACY_LAN_PROBE_BUDGET_SECS = 6;
     static final class Evidence {
         final String network, natType;
         Evidence(String network, String natType) { this.network = network; this.natType = natType; }
@@ -26,6 +28,16 @@ final class TraversalPolicy {
     static boolean symmetricNatHelpRecommended(String errorCode, String localNatType, String remoteNatType) {
         return "hole_punch_wait_timeout".equals(errorCode)
                 && ("symm".equalsIgnoreCase(localNatType) || "symm".equalsIgnoreCase(remoteNatType));
+    }
+    static int negotiateLanProbeBudget(Integer local, Integer remote) {
+        return Math.max(validateLanProbeBudget(local), validateLanProbeBudget(remote));
+    }
+    private static int validateLanProbeBudget(Integer value) {
+        if (value == null) return LEGACY_LAN_PROBE_BUDGET_SECS;
+        if (value < 1 || value > LEGACY_LAN_PROBE_BUDGET_SECS) {
+            throw new IllegalArgumentException("invalid_lan_probe_budget");
+        }
+        return value;
     }
     static List<String> plan(boolean ipv6, boolean tcp, List<Evidence> local, List<Evidence> remote,
                              Boolean localIpv6, Boolean remoteIpv6) {

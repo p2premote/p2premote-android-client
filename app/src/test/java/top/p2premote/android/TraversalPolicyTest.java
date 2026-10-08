@@ -72,4 +72,18 @@ public class TraversalPolicyTest {
         assertFalse(TraversalPolicy.symmetricNatHelpRecommended("internal_error", "symm", "symm"));
         assertFalse(TraversalPolicy.symmetricNatHelpRecommended("hole_punch_wait_timeout", "hard", "easy"));
     }
+    @Test public void lanBudgetIsShortOnlyWhenBothPeersSupportIt() {
+        assertEquals(1, TraversalPolicy.negotiateLanProbeBudget(1, 1));
+        assertEquals(TraversalPolicy.LEGACY_LAN_PROBE_BUDGET_SECS,
+                TraversalPolicy.negotiateLanProbeBudget(1, null));
+        assertEquals(TraversalPolicy.LEGACY_LAN_PROBE_BUDGET_SECS,
+                TraversalPolicy.negotiateLanProbeBudget(null, 1));
+        assertEquals(2, TraversalPolicy.negotiateLanProbeBudget(1, 2));
+    }
+    @Test public void lanBudgetRejectsOutOfRangeValues() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TraversalPolicy.negotiateLanProbeBudget(0, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> TraversalPolicy.negotiateLanProbeBudget(1, 7));
+    }
 }
