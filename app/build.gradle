@@ -34,6 +34,8 @@ android {
         targetCompatibility JavaVersion.VERSION_11
     }
 
+    sourceSets.test.resources.srcDir("../../p2premote-punch-rs/testdata")
+
     buildTypes {
         release {
             // 当前发行包与调试包共用本机 Gradle debug keystore，确保生成的
@@ -80,4 +82,5 @@ dependencies {
     // 支持主动发送协议 Ping 并接收 Pong 回调；用于与桌面端一致的 WS 就绪状态机。
     implementation "org.java-websocket:Java-WebSocket:1.6.0"
     testImplementation "junit:junit:4.13.2"
+    testImplementation "org.json:json:20240303"
 }

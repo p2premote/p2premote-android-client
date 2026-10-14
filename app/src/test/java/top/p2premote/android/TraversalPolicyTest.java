@@ -1,12 +1,58 @@
 package top.p2premote.android;
 
 import org.junit.Test;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import static org.junit.Assert.*;
 
 public class TraversalPolicyTest {
+    @Test public void sharedProtocolVectorsMatchDesktop() throws Exception {
+        JSONObject vectors;
+        try (InputStream input = getClass().getClassLoader().getResourceAsStream("traversal-policy-v2.json")) {
+            assertNotNull("shared traversal vectors", input);
+            vectors = new JSONObject(new String(input.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        assertEquals(TraversalPolicy.VERSION, vectors.getInt("version"));
+        JSONObject evidence = vectors.getJSONObject("evidence_sets");
+        JSONArray cases = vectors.getJSONArray("plan_cases");
+        for (int i = 0; i < cases.length(); i++) {
+            JSONObject c = cases.getJSONObject(i), preferences = c.getJSONObject("preferences");
+            List<String> expected = new ArrayList<>();
+            JSONArray networks = c.getJSONArray("expected");
+            for (int n = 0; n < networks.length(); n++) expected.add(networks.getString(n));
+            assertEquals(c.getString("name"), expected, TraversalPolicy.plan(
+                    preferences.getBoolean("prefer_ipv6"), preferences.getBoolean("prefer_tcp"),
+                    sharedEvidence(evidence.getJSONArray(c.getString("local"))),
+                    sharedEvidence(evidence.getJSONArray(c.getString("remote"))),
+                    c.isNull("local_ipv6") ? null : c.getBoolean("local_ipv6"),
+                    c.isNull("remote_ipv6") ? null : c.getBoolean("remote_ipv6")));
+        }
+        cases = vectors.getJSONArray("budget_cases");
+        for (int i = 0; i < cases.length(); i++) {
+            JSONObject c = cases.getJSONObject(i);
+            Integer local = c.isNull("local") ? null : c.getInt("local");
+            Integer remote = c.isNull("remote") ? null : c.getInt("remote");
+            if (c.isNull("expected")) {
+                assertThrows(IllegalArgumentException.class, () -> TraversalPolicy.negotiateLanProbeBudget(local, remote));
+            } else {
+                assertEquals(c.getInt("expected"), TraversalPolicy.negotiateLanProbeBudget(local, remote));
+            }
+        }
+    }
+    private List<TraversalPolicy.Evidence> sharedEvidence(JSONArray values) throws Exception {
+        List<TraversalPolicy.Evidence> result = new ArrayList<>();
+        for (int i = 0; i < values.length(); i++) {
+            JSONObject value = values.getJSONObject(i);
+            result.add(nat(value.getString("network"), value.getString("nat_type")));
+        }
+        return result;
+    }
     private TraversalPolicy.Evidence nat(String network, String type) { return new TraversalPolicy.Evidence(network, type); }
     @Test public void tcpAdmissionUsesTheSameNetwork() {
         List<TraversalPolicy.Evidence> local = Arrays.asList(nat("udp4", "easy"), nat("tcp4", "hard"), nat("tcp6", "easy"));
