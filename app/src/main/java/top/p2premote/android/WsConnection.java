@@ -66,6 +66,7 @@ public final class WsConnection {
     private final Object connectionLock = new Object();
 
     private volatile WebSocketClient webSocket;
+    private final AtomicLong socketGeneration = new AtomicLong(0);
     private final Object heartbeatLock = new Object();
     private long nextPingSequence = 0;
     private long waitingPingSequence = 0;
@@ -78,6 +79,7 @@ public final class WsConnection {
     /** 等待 p2p_notify_ack 的请求表：message_id → 结果（true=accepted）。 */
     private final ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Boolean>> pendingAcks =
             new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<String>> signalAcks = new ConcurrentHashMap<>();
 
     /** 被动端 p2p_notify 回调（attempt_ready/approval_result/attempt_failed）。 */
     private volatile PeerNotifyListener peerNotifyListener;
@@ -86,14 +88,26 @@ public final class WsConnection {
     interface TraversalListener { void onMessage(JSONObject data); }
     private static final class TraversalBinding {
         final String connection, attempt;
-        final long peer;
+        final long peer, generation;
         final TraversalListener listener;
-        TraversalBinding(String connection, long peer, String attempt, TraversalListener listener) {
+        final Runnable disconnected;
+        TraversalBinding(String connection, long peer, String attempt, long generation, TraversalListener listener, Runnable disconnected) {
             this.connection = connection; this.peer = peer; this.attempt = attempt; this.listener = listener;
+            this.generation = generation; this.disconnected = disconnected;
         }
     }
     void setTraversalListener(String connection, long peer, String attempt, TraversalListener listener) {
-        traversalBinding = new TraversalBinding(connection, peer, attempt, listener);
+        setTraversalListener(connection, peer, attempt, listener, () -> {});
+    }
+    void setTraversalListener(String connection, long peer, String attempt, TraversalListener listener, Runnable disconnected) {
+        traversalBinding = new TraversalBinding(connection, peer, attempt, socketGeneration.get(), listener, disconnected);
+    }
+    long socketGeneration() { return socketGeneration.get(); }
+    private void cancelSignalWaiters() {
+        signalAcks.values().forEach(f -> f.complete("signal_connection_lost"));
+        signalAcks.clear();
+        TraversalBinding binding = traversalBinding;
+        if (binding != null) binding.disconnected.run();
     }
     void clearTraversalListener(String attempt) {
         TraversalBinding binding = traversalBinding;
@@ -169,6 +183,7 @@ public final class WsConnection {
             f.complete(false);
         }
         pendingAcks.clear();
+        cancelSignalWaiters();
     }
 
     /**
@@ -231,6 +246,29 @@ public final class WsConnection {
         } finally {
             pendingAcks.remove(messageId);
         }
+    }
+
+    /** Native signal sends preserve the actual rejection and obey their phase budget. */
+    String sendSignalWaitAck(String connectionId, long targetDeviceId, String messageId,
+                            String accessGrant, String data, long generation, long timeoutMillis) {
+        java.util.concurrent.CompletableFuture<String> future = new java.util.concurrent.CompletableFuture<>();
+        if (signalAcks.putIfAbsent(messageId, future) != null) return "duplicate_notify_message_id";
+        try {
+            JSONObject payload = new JSONObject().put("connection_id", connectionId).put("target_device_id", targetDeviceId)
+                    .put("message_id", messageId).put("access_grant", accessGrant).put("data", data);
+            synchronized (connectionLock) {
+                if (!connected.get() || generation != socketGeneration.get() || webSocket == null || !webSocket.isOpen()) return "signal_connection_lost";
+                webSocket.send(new JSONObject().put("type", "p2p_notify").put("payload", payload).toString());
+            }
+            String result = future.get(Math.max(1, Math.min(5000, timeoutMillis)), TimeUnit.MILLISECONDS);
+            return result.isEmpty() ? null : result;
+        } catch (java.util.concurrent.TimeoutException error) {
+            return "signal_server_ack_timeout";
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt(); return "signal_cancelled";
+        } catch (Exception error) {
+            return "signal_connection_lost";
+        } finally { signalAcks.remove(messageId, future); }
     }
 
     // ============ 内部连接逻辑 ============
@@ -316,6 +354,7 @@ public final class WsConnection {
             }
             disconnectSocket();
             webSocket = socket;
+            socketGeneration.incrementAndGet();
             socket.connect();
         }
     }
@@ -404,9 +443,14 @@ public final class WsConnection {
                 String messageId = payload.optString("message_id", "");
                 boolean accepted = payload.optBoolean("accepted", false);
                 java.util.concurrent.CompletableFuture<Boolean> future = pendingAcks.remove(messageId);
+                java.util.concurrent.CompletableFuture<String> signalFuture = signalAcks.remove(messageId);
+                if (signalFuture != null) {
+                    JSONObject error = payload.optJSONObject("error");
+                    signalFuture.complete(accepted ? "" : error == null ? "signal_server_rejected" : error.optString("code", "signal_server_rejected"));
+                }
                 if (future != null) {
                     future.complete(accepted);
-                } else {
+                } else if (signalFuture == null) {
                     Log.d(TAG, "p2p_notify_ack unmatched: " + messageId);
                 }
                 return;
@@ -421,7 +465,7 @@ public final class WsConnection {
             if ("p2p_notify".equals(type)) {
                 if (payload == null) return;
                 TraversalBinding binding = traversalBinding;
-                if (binding != null && binding.connection.equals(payload.optString("connection_id"))
+                if (binding != null && binding.generation == socketGeneration.get() && binding.connection.equals(payload.optString("connection_id"))
                         && binding.peer == payload.optLong("source_device_id")) {
                     JSONObject business = new JSONObject(payload.optString("data", "{}"));
                     if (binding.attempt.equals(business.optString("attempt_id"))) binding.listener.onMessage(business);
@@ -509,6 +553,7 @@ public final class WsConnection {
     private void handleDisconnect(String reason) {
         resetHeartbeat();
         connected.set(false);
+        cancelSignalWaiters();
         updateState(PresenceService.STATE_DISCONNECTED);
         Log.w(TAG, "WebSocket disconnected: " + reason);
         scheduleReconnect();

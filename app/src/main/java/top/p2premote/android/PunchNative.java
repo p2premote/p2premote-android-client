@@ -25,6 +25,16 @@ public final class PunchNative {
     /** 在任何 exchange / 打洞调用之前注册；传 null 清除。 */
     public static native void nativeSetProtectCallback(ProtectCallback callback);
 
+    public interface SignalSender { boolean enqueue(long requestId, String data, long remainingMillis); }
+    static native String nativeCreateSignalSession(String contextJson, SignalSender sender);
+    static native String nativeRegisterSignalCall(String handle, String callJson);
+    static native String nativeDeliverSignal(String handle, String identityJson, String frameJson);
+    static native void nativeCompleteSignalSend(String handle, long requestId, String error);
+    static native String nativeExchangeWithSignal(String handle, String requestJson);
+    static native String nativeStartUdpTunnelWithSignal(String handle, String callId, String requestJson);
+    static native void nativeCancelSignalCall(String handle, String callId);
+    static native boolean nativeCloseSignalSession(String handle);
+
     static native String nativeExchange(
             String token, String sendData, String roleHint, int exmode, int timeoutSecs);
 
@@ -61,6 +71,7 @@ public final class PunchNative {
     /** 对应原 wgvpnmobile.TunnelResult 的返回值。 */
     public static final class TunnelResult {
         private final boolean ok;
+        private final boolean signalFailed;
         private final String handleId;
         private final long localForwardPort;
         private final String peerEndpoint;
@@ -71,6 +82,7 @@ public final class PunchNative {
         private final String error;
 
         private TunnelResult(JSONObject json) {
+            this.signalFailed = json.optBoolean("signal_failed", false);
             this.network = json.optString("network", "");
             this.ok = json.optBoolean("ok", false);
             this.handleId = json.optString("handle_id", "");
@@ -119,6 +131,7 @@ public final class PunchNative {
             return error;
         }
         public String getNetwork() { return network; }
+        public boolean getSignalFailed() { return signalFailed; }
         private final String network;
     }
 
@@ -149,6 +162,14 @@ public final class PunchNative {
             json = fallback;
         }
         return new TunnelResult(json);
+    }
+
+    static ExchangeResult exchangeWithSignal(String handle, String request) throws Exception {
+        JSONObject result = new JSONObject(nativeExchangeWithSignal(handle, request));
+        return new ExchangeResult(result.optBoolean("ok"), result.optString("recv_data", ""), result.optString("error", ""));
+    }
+    static TunnelResult startWithSignal(String handle, String call, String request) throws Exception {
+        return new TunnelResult(new JSONObject(nativeStartUdpTunnelWithSignal(handle, call, request)));
     }
 
     public static void stopUdpTunnel(String handleId) {

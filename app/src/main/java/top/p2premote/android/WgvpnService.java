@@ -217,6 +217,7 @@ public final class WgvpnService extends VpnService {
     private final Map<Long, UnderlyingNetworkState> underlyingNetworks = new ConcurrentHashMap<>();
     private volatile boolean automaticRecoveryInProgress = false;
     private volatile boolean manualStopRequested = false;
+    private volatile TraversalClient activeTraversal;
     /** 覆盖 ACTION_START 入队到 PREPARING 状态发布之间的窄窗口，避免重复启动排入第二个任务。 */
     private final AtomicBoolean manualStartQueued = new AtomicBoolean(false);
     /** 健康线程、系统回调和 UI 可能同时请求停止；只允许一个清理任务进入 native 串行队列。 */
@@ -710,6 +711,8 @@ public final class WgvpnService extends VpnService {
     }
 
     private void interruptTunnelWorker() {
+        TraversalClient active = activeTraversal;
+        if (active != null) active.cancelSignal();
         Thread worker = tunnelWorkerThread;
         if (worker != null && worker != Thread.currentThread()) {
             worker.interrupt();
@@ -803,6 +806,7 @@ public final class WgvpnService extends VpnService {
                 attemptWs = ws;
                 traversal = new TraversalClient(ws, opened, targetDeviceId, attemptId,
                         connectionPreferences, this::underlyingIpv6Available, () -> ensureStartGeneration(expectedGeneration));
+                activeTraversal = traversal;
                 if (!ws.isConnected()) {
                     throw new IllegalStateException("WebSocket 未连接，无法发送打洞信令");
                 }
@@ -860,6 +864,7 @@ public final class WgvpnService extends VpnService {
                 attemptData.put("source_device_name", DeviceIdentity.deviceName());
                 attemptData.put("source_device_alias", "");
                 attemptData.put("traversal_negotiation", traversal.negotiation());
+                attemptData.put("signal_transport", traversal.transportOffer());
 
                 String notifyMessageId = ApiClient.buildMessageId();
                 boolean acked = ws.sendNotifyWaitAck(
@@ -886,6 +891,7 @@ public final class WgvpnService extends VpnService {
                     throw new IllegalStateException("对端准备失败：" + readyResult[1]);
                 }
                 traversal.negotiated(); // Explicit malformed versions must fail before key exchange.
+                traversal.configureSignal(session.deviceId, punchToken);
                 Log.i(TAG, "attempt_ready received: rdp_port=" + readyRdpPort[0] + ", starting gonc exchange");
                 DiagLog.i(TAG, "attempt_ready rdp_port=" + readyRdpPort[0]);
 
@@ -912,11 +918,10 @@ public final class WgvpnService extends VpnService {
                 sendPayload.put("my_ip", expectedPassiveIp);
                 sendPayload.put("exposed_lan_cidrs", new JSONArray());
 
-                ExchangeResult exResult = PunchNative.exchange(
-                        punchToken, sendPayload.toString(), "active", 0, EXCHANGE_TIMEOUT_SEC);
+                ExchangeResult exResult = traversal.exchange(punchToken, sendPayload.toString(), EXCHANGE_TIMEOUT_SEC);
                 DiagLog.i(TAG, "exchange timeout=" + EXCHANGE_TIMEOUT_SEC
                         + " -> ok=" + exResult.getOK() + " error=" + exResult.getError()
-                        + " recv=" + exResult.getRecvData());
+                        );
                 ensureStartGeneration(expectedGeneration);
                 if (!exResult.getOK()) {
                     throw new IllegalStateException("密钥交换失败：" + exResult.getError());
@@ -1176,6 +1181,7 @@ public final class WgvpnService extends VpnService {
                 stopSelf();
             } finally {
                 if (traversal != null) traversal.close();
+                if (activeTraversal == traversal) activeTraversal = null;
                 if (!automaticRecovery) {
                     manualStartQueued.set(false);
                 }

@@ -14,6 +14,7 @@
 //! the already-suffixed session uid).
 
 use std::sync::Mutex;
+mod signal;
 use std::time::Duration;
 
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};

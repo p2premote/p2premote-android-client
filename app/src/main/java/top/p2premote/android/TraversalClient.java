@@ -8,7 +8,7 @@ import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-/** Active-side application coordinator. No changes to the punch MQTT protocol. */
+/** Active-side coordinator; select WS once, retain MQTT for transition peers. */
 final class TraversalClient implements AutoCloseable {
     private static final String TAG = "TraversalClient";
     interface Check { void run() throws Exception; }
@@ -22,6 +22,8 @@ final class TraversalClient implements AutoCloseable {
     private final ArrayBlockingQueue<JSONObject> inbox = new ArrayBlockingQueue<>(64);
     private volatile JSONObject ready;
     private volatile String signalError;
+    private volatile PunchSignalClient signal;
+    private volatile boolean wsSignalSelected;
     // p2p/end 上报用：主动端发出的提议与被动端响应确认的选择（逗号连接，空=未走新协商）。
     private volatile String proposedNetworks = "";
     private volatile String acknowledgedNetworks = "";
@@ -35,7 +37,9 @@ final class TraversalClient implements AutoCloseable {
         this.ws = ws; this.opened = opened; this.peer = peer; this.attempt = attempt;
         this.preferences = preferences; this.check = check;
         this.ipv6Availability = ipv6Availability;
-        ws.setTraversalListener(opened.connectionId, peer, attempt, this::receive);
+        ws.setTraversalListener(opened.connectionId, peer, attempt, this::receive, () -> {
+            if (wsSignalSelected) { signalError = "signal_connection_lost"; cancelSignal(); }
+        });
     }
     JSONObject negotiation() throws Exception {
         return new JSONObject().put("version", TraversalPolicy.VERSION).put("preferences",
@@ -44,7 +48,14 @@ final class TraversalClient implements AutoCloseable {
     private void receive(JSONObject data) {
         String type = data.optString("type");
         if ("attempt_ready".equals(type)) ready = data;
-        else if ("attempt_failed".equals(type) || "attempt_cancel".equals(type)) signalError = "peer_traversal_failed";
+        else if ("attempt_failed".equals(type) || "attempt_cancel".equals(type)) { signalError = "peer_traversal_failed"; cancelSignal(); }
+        else if ("punch_signal".equals(type)) {
+            try {
+                PunchSignalClient active = signal;
+                if (!wsSignalSelected || active == null) throw new IllegalStateException("signal_transport_mismatch");
+                active.receive(data);
+            } catch (Exception error) { signalError = error.getMessage(); cancelSignal(); }
+        }
         else if ("traversal".equals(type)) {
             JSONObject frame = data.optJSONObject("frame");
             if (frame == null || !inbox.offer(frame)) signalError = "invalid_traversal_frame";
@@ -61,6 +72,31 @@ final class TraversalClient implements AutoCloseable {
             throw new IllegalStateException("traversal_preference_mismatch");
         }
         return true;
+    }
+    JSONObject transportOffer() throws Exception { return SignalTransport.offer(BuildConfig.SIGNAL_WS_ENABLED); }
+    void configureSignal(long local, String token) throws Exception {
+        check.run();
+        wsSignalSelected = SignalTransport.selectedWs(ready, BuildConfig.SIGNAL_WS_ENABLED, negotiated());
+        if (wsSignalSelected) {
+            PunchSignalClient created = new PunchSignalClient(ws, opened, local, peer, attempt);
+            signal = created;
+            try {
+                created.register("wg-config", token + "-kx", 120_000);
+                check.run();
+                if (signalError != null) throw new IllegalStateException(signalError);
+            } catch (Exception error) { created.close(); throw error; }
+        }
+    }
+    PunchNative.ExchangeResult exchange(String token, String payload, int timeout) throws Exception {
+        check.run();
+        if (!wsSignalSelected) return PunchNative.exchange(token, payload, "active", 0, timeout);
+        PunchSignalClient active = signal;
+        if (active == null) throw new IllegalStateException("signal_context_mismatch");
+        return active.exchange(token, payload, timeout);
+    }
+    void cancelSignal() {
+        PunchSignalClient active = signal;
+        if (active != null) active.close();
     }
     private void send(JSONObject frame) throws Exception {
         check.run();
@@ -117,6 +153,7 @@ final class TraversalClient implements AutoCloseable {
     PunchNative.TunnelResult start(JSONObject template) throws Exception {
         if (!negotiated()) return PunchNative.startUdpTunnel(template.toString());
         check.run();
+        if (wsSignalSelected) signal.closeCall("wg-config");
         JSONArray local = new JSONArray(PunchNative.nativeDetectNat());
         // Limit duplicates from multi-interface native detection.
         JSONArray bounded = new JSONArray();
@@ -181,13 +218,21 @@ final class TraversalClient implements AutoCloseable {
             String network = rounds.get(i), mode = i == 0 ? "lan" : "internet";
             int seconds = i == 0 ? lanProbeBudgetSecs : 30;
             String token = UUID.randomUUID().toString();
+            String callId = "network/" + round;
+            if (wsSignalSelected) signal.register(callId, token, (seconds + 12) * 1000L);
             send(frame("prepare", round).put("network", network).put("mode", mode).put("token", token).put("timeout_secs", seconds));
             waitFrame(round, "ready");
             JSONObject request = new JSONObject(template.toString()).put("network", network).put("traversal_mode", mode)
                     .put("token", token).put("timeout_secs", seconds);
             boolean skipIpv6 = network.endsWith("6") && Boolean.FALSE.equals(ipv6);
             if ("internet".equals(mode) && !skipIpv6) attemptedNetworks.add(network);
-            PunchNative.TunnelResult owned = skipIpv6 ? null : PunchNative.startUdpTunnel(request.toString());
+            PunchNative.TunnelResult owned;
+            try {
+                owned = skipIpv6 ? null : wsSignalSelected ? signal.start(callId, request) : PunchNative.startUdpTunnel(request.toString());
+            } finally { if (wsSignalSelected) signal.closeCall(callId); }
+            if (owned != null && owned.getSignalFailed()) {
+                throw new IllegalStateException(owned.getError());
+            }
             if (owned != null && !owned.getOK()) {
                 if (!owned.getLocalNATType().isEmpty()) localNatType = owned.getLocalNATType();
                 if (!owned.getRemoteNATType().isEmpty()) remoteNatType = owned.getRemoteNATType();
@@ -208,7 +253,7 @@ final class TraversalClient implements AutoCloseable {
         }
         throw new IllegalStateException("punch_exhausted:" + String.join(",", attemptedNetworks));
     }
-    @Override public void close() { ws.clearTraversalListener(attempt); }
+    @Override public void close() { cancelSignal(); ws.clearTraversalListener(attempt); }
     String traversalPlan() { return proposedNetworks; }
     String traversalSelection() { return acknowledgedNetworks; }
     String localNatType() { return localNatType; }
