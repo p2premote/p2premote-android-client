@@ -48,11 +48,13 @@ public final class PunchNative {
         private final boolean ok;
         private final String recvData;
         private final String error;
+        private final String errorCode;
 
-        private ExchangeResult(boolean ok, String recvData, String error) {
+        private ExchangeResult(boolean ok, String recvData, String error, String code) {
             this.ok = ok;
             this.recvData = recvData;
             this.error = error;
+            this.errorCode = ok ? "" : ErrorCodes.valid(code) ? code : ErrorCodes.NativeDecodeInvalidPayload;
         }
 
         public boolean getOK() {
@@ -62,6 +64,8 @@ public final class PunchNative {
         public String getRecvData() {
             return recvData;
         }
+
+        public String getErrorCode() { return errorCode; }
 
         public String getError() {
             return error;
@@ -80,6 +84,7 @@ public final class PunchNative {
         private final String selectedTraversal;
         private final String transportMode;
         private final String error;
+        private final String errorCode;
 
         private TunnelResult(JSONObject json) {
             this.signalFailed = json.optBoolean("signal_failed", false);
@@ -92,7 +97,8 @@ public final class PunchNative {
             this.remoteNATType = json.optString("remote_nat_type", "");
             this.selectedTraversal = json.optString("selected_traversal", "");
             this.transportMode = json.optString("transport_mode", "");
-            this.error = json.optString("error", "");
+            this.error = json.optString("message", "");
+            this.errorCode = ok ? "" : ErrorCodes.valid(json.optString("error_code")) ? json.optString("error_code") : ErrorCodes.NativeDecodeInvalidPayload;
         }
 
         public boolean getOK() {
@@ -127,6 +133,8 @@ public final class PunchNative {
             return transportMode;
         }
 
+        public String getErrorCode() { return errorCode; }
+
         public String getError() {
             return error;
         }
@@ -141,12 +149,12 @@ public final class PunchNative {
         try {
             json = new JSONObject(nativeExchange(token, sendData, roleHint, exmode, timeoutSecs));
         } catch (Exception e) {
-            return new ExchangeResult(false, "", "nativeExchange failed: " + e.getMessage());
+            return new ExchangeResult(false, "", "nativeExchange failed: " + e.getMessage(), ErrorCodes.NativeJniFailed);
         }
         return new ExchangeResult(
                 json.optBoolean("ok", false),
                 json.optString("recv_data", ""),
-                json.optString("error", ""));
+                json.optString("message", ""), json.optString("error_code", ""));
     }
 
     public static TunnelResult startUdpTunnel(String requestJson) {
@@ -156,7 +164,8 @@ public final class PunchNative {
         } catch (Exception e) {
             JSONObject fallback = new JSONObject();
             try {
-                fallback.put("error", "nativeStartUdpTunnel failed: " + e.getMessage());
+                fallback.put("message", "nativeStartUdpTunnel failed: " + e.getMessage());
+                fallback.put("error_code", ErrorCodes.NativeJniFailed);
             } catch (Exception ignored) {
             }
             json = fallback;
@@ -166,7 +175,7 @@ public final class PunchNative {
 
     static ExchangeResult exchangeWithSignal(String handle, String request) throws Exception {
         JSONObject result = new JSONObject(nativeExchangeWithSignal(handle, request));
-        return new ExchangeResult(result.optBoolean("ok"), result.optString("recv_data", ""), result.optString("error", ""));
+        return new ExchangeResult(result.optBoolean("ok"), result.optString("recv_data", ""), result.optString("message", ""), result.optString("error_code", ""));
     }
     static TunnelResult startWithSignal(String handle, String call, String request) throws Exception {
         return new TunnelResult(new JSONObject(nativeStartUdpTunnelWithSignal(handle, call, request)));

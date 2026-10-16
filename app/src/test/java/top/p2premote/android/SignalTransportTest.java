@@ -14,13 +14,13 @@ public class SignalTransportTest {
     @Test public void wsRequiresOfferAndTraversalV2() throws Exception {
         JSONObject selected = ready(new JSONObject().put("version", 1).put("selected", "ws-v1"));
         assertTrue(SignalTransport.selectedWs(selected, true, true));
-        assertThrows(IllegalStateException.class, () -> SignalTransport.selectedWs(selected, true, false));
-        assertThrows(IllegalStateException.class, () -> SignalTransport.selectedWs(selected, false, true));
+        assertThrows(AppException.class, () -> SignalTransport.selectedWs(selected, true, false));
+        assertThrows(AppException.class, () -> SignalTransport.selectedWs(selected, false, true));
     }
     @Test public void malformedExplicitSelectionIsNotLegacy() throws Exception {
-        assertThrows(IllegalStateException.class, () -> SignalTransport.selectedWs(ready(JSONObject.NULL), true, true));
-        assertThrows(IllegalStateException.class, () -> SignalTransport.selectedWs(ready(new JSONObject().put("version", "1").put("selected", "ws-v1")), true, true));
-        assertThrows(IllegalStateException.class, () -> SignalTransport.selectedWs(ready(new JSONObject().put("version", 2).put("selected", "ws-v1")), true, true));
+        assertThrows(AppException.class, () -> SignalTransport.selectedWs(ready(JSONObject.NULL), true, true));
+        assertThrows(AppException.class, () -> SignalTransport.selectedWs(ready(new JSONObject().put("version", "1").put("selected", "ws-v1")), true, true));
+        assertThrows(AppException.class, () -> SignalTransport.selectedWs(ready(new JSONObject().put("version", 2).put("selected", "ws-v1")), true, true));
     }
     @Test public void transitionOfferIncludesBothTransports() throws Exception {
         assertEquals(2, SignalTransport.offer(true).getJSONArray("supported").length());

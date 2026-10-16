@@ -785,7 +785,7 @@ public final class WgvpnService extends VpnService {
                 opened = openP2PWithRetry(clientJobId, targetItem);
                 ensureStartGeneration(expectedGeneration);
                 if (opened.connectionId.isEmpty() || opened.accessGrant.isEmpty()) {
-                    throw new IllegalStateException("p2p/open 未返回有效的 connection_id 或 access_grant");
+                    throw new AppException(ErrorCodes.NativeDecodeInvalidPayload, "p2p/open 未返回有效的 connection_id 或 access_grant");
                 }
                 Log.i(TAG, "p2p/open ok: connection_id=" + opened.connectionId + " log_id=" + opened.logId);
                 DiagLog.i(TAG, "p2p/open ok connection_id=" + opened.connectionId + " log_id=" + opened.logId);
@@ -808,7 +808,7 @@ public final class WgvpnService extends VpnService {
                         connectionPreferences, this::underlyingIpv6Available, () -> ensureStartGeneration(expectedGeneration));
                 activeTraversal = traversal;
                 if (!ws.isConnected()) {
-                    throw new IllegalStateException("WebSocket 未连接，无法发送打洞信令");
+                    throw new AppException(ErrorCodes.SignalSendDisconnected, "WebSocket 未连接，无法发送打洞信令");
                 }
                 // 注册被动端回应监听（attempt_ready、审批事件、attempt_failed）。
                 // approval_required 只表示“需要审批”，最终等待必须由
@@ -816,6 +816,7 @@ public final class WgvpnService extends VpnService {
                 final java.util.concurrent.CountDownLatch readyLatch = new java.util.concurrent.CountDownLatch(1);
                 final java.util.concurrent.CountDownLatch approvalDecisionLatch = new java.util.concurrent.CountDownLatch(1);
                 final String[] readyResult = {"timeout", ""};
+                final AtomicReference<AppException> readyFailure = new AtomicReference<>();
                 final int[] readyRdpPort = {0};
                 final AtomicBoolean approvalRequired = new AtomicBoolean(false);
                 final AtomicReference<String> approvalResult = new AtomicReference<>("pending");
@@ -841,7 +842,8 @@ public final class WgvpnService extends VpnService {
                         approvalDecisionLatch.countDown();
                     } else {
                         readyResult[0] = type;
-                        readyResult[1] = error != null ? error : "unknown";
+                        readyFailure.set(error);
+                        readyResult[1] = error != null ? error.getMessage() : "unknown";
                         readyLatch.countDown();
                     }
                 });
@@ -853,6 +855,7 @@ public final class WgvpnService extends VpnService {
                 JSONObject attemptData = new JSONObject();
                 attemptData.put("type", "attempt_start");
                 attemptData.put("protocol_version", 1);
+                attemptData.put("error_contract_version", ErrorCodes.CONTRACT_VERSION);
                 attemptData.put("client_job_id", clientJobId);
                 attemptData.put("attempt_id", attemptId);
                 attemptData.put("attempt", 1);
@@ -873,7 +876,7 @@ public final class WgvpnService extends VpnService {
                 ensureStartGeneration(expectedGeneration);
                 if (!acked) {
                     ws.setPeerNotifyListener(null);
-                    throw new IllegalStateException("打洞信令发送失败或被服务端拒绝");
+                    throw new AppException(ErrorCodes.SignalSendRejected, "打洞信令发送失败或被服务端拒绝");
                 }
                 attemptStarted = true;
                 Log.i(TAG, "p2p_notify acked, waiting attempt_ready");
@@ -884,11 +887,12 @@ public final class WgvpnService extends VpnService {
                     ws.setPeerNotifyListener(null);
                     // 超时后通知被动端取消本次 attempt，避免被动端空等（对齐桌面 AttemptCancel）。
                     sendAttemptCancel(ws, opened, targetDeviceId, attemptId, "peer_prepare_timeout");
-                    throw new IllegalStateException("等待对端准备超时（" + PEER_READY_TIMEOUT_SEC + " 秒）");
+                    throw new AppException(ErrorCodes.ConnectionPeerPrepareTimeout, "等待对端准备超时（" + PEER_READY_TIMEOUT_SEC + " 秒）");
                 }
                 ensureStartGeneration(expectedGeneration);
                 if (!"attempt_ready".equals(readyResult[0])) {
-                    throw new IllegalStateException("对端准备失败：" + readyResult[1]);
+                    if (readyFailure.get() != null) throw readyFailure.get();
+                    throw new AppException(ErrorCodes.ConnectionPeerPrepareRejected, "对端准备失败：" + readyResult[1]);
                 }
                 traversal.negotiated(); // Explicit malformed versions must fail before key exchange.
                 traversal.configureSignal(session.deviceId, punchToken);
@@ -924,7 +928,7 @@ public final class WgvpnService extends VpnService {
                         );
                 ensureStartGeneration(expectedGeneration);
                 if (!exResult.getOK()) {
-                    throw new IllegalStateException("密钥交换失败：" + exResult.getError());
+                    throw new AppException(exResult.getErrorCode(), exResult.getError());
                 }
 
                 JSONObject recvPayload = new JSONObject(exResult.getRecvData());
@@ -935,7 +939,7 @@ public final class WgvpnService extends VpnService {
                 String assignedIp = u32ToIp(assignedIpU32);
                 String peerIp = u32ToIp(myIpU32);
                 if (assignedIp.equals("0.0.0.0") || peerIp.equals("0.0.0.0") || peerPubkeyHex.isEmpty()) {
-                    throw new IllegalStateException("密钥交换返回的数据不完整");
+                    throw new AppException(ErrorCodes.TraversalKeyExchangeInvalidPayload, "密钥交换返回的数据不完整");
                 }
                 myVirtualIp = assignedIp;
                 peerVirtualIp = peerIp;
@@ -975,14 +979,14 @@ public final class WgvpnService extends VpnService {
                         + " nat=" + tunnelResult.getLocalNATType() + "/" + tunnelResult.getRemoteNATType()
                         + " error=" + tunnelResult.getError());
                 if (!tunnelResult.getOK()) {
-                    throw new IllegalStateException("P2P 打洞失败：" + tunnelResult.getError());
+                    throw new AppException(tunnelResult.getErrorCode(), tunnelResult.getError());
                 }
                 goncHandleId = tunnelResult.getHandleID();
                 selectedNetwork = tunnelResult.getNetwork();
                 ensureStartGeneration(expectedGeneration);
                 int localForwardPort = (int) tunnelResult.getLocalForwardPort();
                 if (localForwardPort <= 0) {
-                    throw new IllegalStateException("gonc 未返回有效本地转发端口");
+                    throw new AppException(ErrorCodes.NativeDecodeInvalidPayload, "gonc 未返回有效本地转发端口");
                 }
                 Log.i(TAG, "gonc traversal selected=" + tunnelResult.getSelectedTraversal()
                         + " transport=" + tunnelResult.getTransportMode()
@@ -1031,13 +1035,13 @@ public final class WgvpnService extends VpnService {
                 // 若后续要解析对端 LAN 内域名，需要额外注入 DNS。
                 tunFd = builder.establish();
                 if (tunFd == null) {
-                    throw new IllegalStateException("VpnService 建立虚拟网卡失败");
+                    throw new AppException(ErrorCodes.WireguardConfigureBackendUnavailable, "VpnService 建立虚拟网卡失败");
                 }
 
                 // userspace WG Start + AddPeer
                 WgResult wgStart = Libwgmobile.wgStart(tunFd.getFd(), privateKeyHex, WG_LISTEN_PORT, WGVPN_MTU);
                 if (!wgStart.getOK()) {
-                    throw new IllegalStateException("WireGuard 启动失败：" + wgStart.getError());
+                    throw new AppException(ErrorCodes.WireguardConfigureFailed, "WireGuard 启动失败：" + wgStart.getError());
                 }
                 // wgStart 成功后 fd 所有权移交 native：detachFd 让 ParcelFileDescriptor 放弃
                 // 对该 fd 的关闭职责，由 WgStop -> androidTun.Close 统一关闭，杜绝 double-close。
@@ -1057,7 +1061,7 @@ public final class WgvpnService extends VpnService {
                 WgResult wgPeer = Libwgmobile.wgAddPeer(peerPubkeyHex, endpoint, allowedIps, PERSISTENT_KEEPALIVE);
                 ensureStartGeneration(expectedGeneration);
                 if (!wgPeer.getOK()) {
-                    throw new IllegalStateException("WireGuard 添加 peer 失败：" + wgPeer.getError());
+                    throw new AppException(ErrorCodes.WireguardConfigureFailed, "WireGuard 添加 peer 失败：" + wgPeer.getError());
                 }
 
                 // 等 WG 握手（最多 15 秒）
@@ -1073,7 +1077,7 @@ public final class WgvpnService extends VpnService {
                     Thread.sleep(500);
                 }
                 if (!handshakeOk) {
-                    throw new IllegalStateException("WireGuard 握手超时（" + WG_HANDSHAKE_TIMEOUT_SEC + " 秒）");
+                    throw new AppException(ErrorCodes.WireguardHandshakeTimeout, "WireGuard 握手超时（" + WG_HANDSHAKE_TIMEOUT_SEC + " 秒）");
                 }
                 ensureStartGeneration(expectedGeneration);
 
@@ -1082,10 +1086,10 @@ public final class WgvpnService extends VpnService {
                 if (approvalRequired.get()) {
                     emit(TunnelState.WAITING_APPROVAL, "连接请求已发送，请等待对方同意", myVirtualIp, peerVirtualIp, exposedLan);
                     if (!approvalDecisionLatch.await(65, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException("被动端审批超时");
+                        throw new AppException(ErrorCodes.ConnectionApprovalTimeout, "被动端审批超时");
                     }
                     if (!"approval_granted".equals(approvalResult.get())) {
-                        throw new IllegalStateException("被动端未允许业务数据：" + approvalResult.get());
+                        throw new AppException(ErrorCodes.ConnectionApprovalDenied, "被动端未允许业务数据：" + approvalResult.get());
                     }
                 }
                 ws.setPeerNotifyListener(null);
@@ -1126,7 +1130,7 @@ public final class WgvpnService extends VpnService {
                 if (msg == null || msg.isEmpty()) msg = "建立隧道失败";
                 Log.e(TAG, "tunnel failed", e);
                 DiagLog.e(TAG, "tunnel failed", e);
-                String errorCode = classifyErrorCode(msg);
+                String errorCode = AppException.from(e).errorCode;
                 boolean superseded = e instanceof RecoverySupersededException
                         || manualStopRequested
                         || networkRecovery.generation() != expectedGeneration;
@@ -1142,7 +1146,8 @@ public final class WgvpnService extends VpnService {
                             traversal != null ? traversal.traversalPlan() : "",
                             traversal != null ? traversal.traversalSelection() : "",
                             traversal != null ? traversal.selectedNetwork() : "",
-                            (android.os.SystemClock.elapsedRealtime() - startedAtMs) / 1000);
+                            (android.os.SystemClock.elapsedRealtime() - startedAtMs) / 1000,
+                            manualStopRequested ? ErrorCodes.ConnectionExecutionUserCancelled : ErrorCodes.ConnectionExecutionNetworkChanged);
                     Log.i(TAG, "discarded superseded tunnel start: generation=" + expectedGeneration);
                     return;
                 }
@@ -1166,7 +1171,7 @@ public final class WgvpnService extends VpnService {
                     handleAutomaticRecoveryFailure(expectedGeneration, e);
                     return;
                 }
-                tcpRetryRecommended = TraversalPolicy.tcpRetryRecommended(connectionPreferences.tcp, msg);
+                tcpRetryRecommended = TraversalPolicy.tcpRetryRecommended(connectionPreferences.tcp, errorCode, traversal == null ? java.util.Collections.emptyList() : traversal.attemptedNetworks());
                 symmetricNatHelpRecommended = TraversalPolicy.symmetricNatHelpRecommended(
                         errorCode,
                         traversal != null ? traversal.localNatType() : "",
@@ -1210,19 +1215,20 @@ public final class WgvpnService extends VpnService {
                                                   boolean attemptStarted,
                                                   String localNatType, String remoteNatType,
                                                   String traversalPlan, String traversalSelection,
-                                                  String selectedNetwork, long durationSeconds) {
+                                                  String selectedNetwork, long durationSeconds,
+                                                  String reasonCode) {
         if (opened == null) {
             return;
         }
         try {
             attemptCleanupExecutor.execute(() -> {
                 if (attemptStarted && ws != null && attemptId != null && !attemptId.isEmpty()) {
-                    sendAttemptCancel(ws, opened, target.id, attemptId, "network_changed");
+                    sendAttemptCancel(ws, opened, target.id, attemptId, reasonCode);
                 }
                 try {
                     apiClient.reportP2PEnd(opened, target, false, localNatType, remoteNatType,
                             traversalPlan, traversalSelection, selectedNetwork, durationSeconds,
-                            "network_changed", "网络变化，旧建链已取消");
+                            reasonCode, ErrorCodes.ConnectionExecutionUserCancelled.equals(reasonCode) ? "用户取消建链" : "网络变化，旧建链已取消");
                 } catch (Exception e) {
                     Log.w(TAG, "superseded p2p/end cleanup failed: " + e.getMessage());
                 }
@@ -1287,41 +1293,6 @@ public final class WgvpnService extends VpnService {
             }
             Thread.sleep(300);
         }
-    }
-
-    /**
-     * 根据异常消息分类结构化 error_code，对齐桌面 classify_tunnel_error_code 白名单。
-     * 用于 p2p/end 失败上报，便于管理后台按错误类型归因统计。
-     *
-     * 按建链阶段从后往前匹配，避免宽泛关键词吞掉后面的精确阶段。异常消息均为
-     * WgvpnService 内 IllegalStateException 的中文文案（见 startTunnel 各阶段 throw）。
-     */
-    private static String classifyErrorCode(String msg) {
-        if (msg == null) return "internal_error";
-        if (msg.contains("审批超时")) return "approval_timeout";
-        if (msg.contains("未允许业务数据")) return "approval_denied";
-        // WireGuard 握手（最靠后，优先判断）
-        if (msg.contains("握手超时") || msg.contains("握手")) return "wireguard_handshake_failed";
-        if (msg.contains("添加 peer")) return "wireguard_config_failed";
-        if (msg.contains("WireGuard 启动")) return "wireguard_config_failed";
-        if (msg.contains("虚拟网卡") || msg.contains("VpnService")) return "wireguard_config_failed";
-        // P2P 打洞 / 转发端口
-        if (msg.startsWith("punch_exhausted:") || msg.contains("traversal_signal_timeout")) {
-            return "hole_punch_wait_timeout";
-        }
-        if (msg.contains("gonc 未返回")) return "hole_punch_wait_timeout";
-        if (msg.contains("P2P 打洞")) return "hole_punch_wait_timeout";
-        // 密钥交换（数据校验失败归 internal，仅交换失败归打洞）
-        if (msg.contains("密钥交换失败")) return "hole_punch_wait_timeout";
-        if (msg.contains("数据不完整")) return "internal_error";
-        // 等待对端 attempt_ready
-        if (msg.contains("等待对端准备超时") || msg.contains("对端准备失败")) return "peer_prepare_timeout";
-        // WS 信令发送（服务端拒绝或 WS 断开）
-        if (msg.contains("打洞信令发送失败") || msg.contains("WebSocket 未连接")) return "peer_offline";
-        // p2p/open
-        if (msg.contains("设备不在线")) return "peer_offline";
-        if (msg.contains("p2p/open") || msg.contains("connection_id")) return "internal_error";
-        return "internal_error";
     }
 
     /**

@@ -7,6 +7,7 @@ use jni::{
 use p2premote_punch::easyp2p::signal::{
     ExternalSignalSession, SendFuture, SessionIdentity, WireSender,
 };
+use p2premote_punch::error::{AppError, ErrorCode};
 use rand::RngCore;
 use serde_json::json;
 use std::{
@@ -23,7 +24,7 @@ struct Sender {
     vm: JavaVM,
     callback: GlobalRef,
     next: AtomicU64,
-    pending: Mutex<HashMap<u64, oneshot::Sender<Result<(), String>>>>,
+    pending: Mutex<HashMap<u64, oneshot::Sender<Result<(), AppError>>>>,
 }
 struct Pending<'a> {
     sender: &'a Sender,
@@ -37,7 +38,11 @@ impl Drop for Pending<'_> {
 impl Sender {
     fn complete(&self, id: u64, error: String) {
         if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
-            let _ = tx.send(if error.is_empty() { Ok(()) } else { Err(error) });
+            let _ = tx.send(if error.is_empty() {
+                Ok(())
+            } else {
+                Err(AppError::from_wire(&error, "signal send failed"))
+            });
         }
     }
     fn cancel(&self) {
@@ -52,7 +57,10 @@ impl WireSender for Sender {
             {
                 let mut pending = self.pending.lock().unwrap();
                 if pending.len() >= 16 {
-                    return Err("signal_queue_full".into());
+                    return Err(AppError::new(
+                        ErrorCode::SignalSendQueueFull,
+                        "signal_queue_full",
+                    ));
                 }
                 pending.insert(id, tx);
             }
@@ -62,17 +70,19 @@ impl WireSender for Sender {
                 .as_millis()
                 .min(5000) as i64;
             if remaining <= 0 {
-                return Err("signal_delivery_timeout".into());
+                return Err(AppError::new(
+                    ErrorCode::SignalSendTimeout,
+                    "signal_delivery_timeout",
+                ));
             }
             // AttachGuard and local references must leave scope before awaiting.
             let queued = {
-                let mut env = self
-                    .vm
-                    .attach_current_thread()
-                    .map_err(|_| "signal_callback_failed".to_string())?;
-                let value = env
-                    .new_string(data)
-                    .map_err(|_| "signal_callback_failed".to_string())?;
+                let mut env = self.vm.attach_current_thread().map_err(|_| {
+                    AppError::new(ErrorCode::NativeJniFailed, "signal_callback_failed")
+                })?;
+                let value = env.new_string(data).map_err(|_| {
+                    AppError::new(ErrorCode::NativeJniFailed, "signal_callback_failed")
+                })?;
                 let result = env
                     .call_method(
                         self.callback.as_obj(),
@@ -88,15 +98,26 @@ impl WireSender for Sender {
                 if result.is_err() {
                     let _ = env.exception_clear();
                 }
-                result.map_err(|_| "signal_callback_failed".to_string())?
+                result.map_err(|_| {
+                    AppError::new(ErrorCode::NativeJniFailed, "signal_callback_failed")
+                })?
             };
             if !queued {
-                return Err("signal_queue_full".into());
+                return Err(AppError::new(
+                    ErrorCode::SignalSendQueueFull,
+                    "signal_queue_full",
+                ));
             }
             match tokio::time::timeout_at(deadline.into(), rx).await {
                 Ok(Ok(result)) => result,
-                Ok(Err(_)) => Err("signal_cancelled".into()),
-                Err(_) => Err("signal_delivery_timeout".into()),
+                Ok(Err(_)) => Err(AppError::new(
+                    ErrorCode::SignalReceiveCancelled,
+                    "signal_cancelled",
+                )),
+                Err(_) => Err(AppError::new(
+                    ErrorCode::SignalSendTimeout,
+                    "signal_delivery_timeout",
+                )),
             }
         })
     }
@@ -109,17 +130,22 @@ fn sessions() -> &'static Mutex<HashMap<String, Arc<Entry>>> {
     static SESSIONS: OnceLock<Mutex<HashMap<String, Arc<Entry>>>> = OnceLock::new();
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
-fn find(handle: &str) -> Result<Arc<Entry>, String> {
+fn find(handle: &str) -> Result<Arc<Entry>, AppError> {
     sessions()
         .lock()
         .unwrap()
         .get(handle)
         .cloned()
-        .ok_or_else(|| "invalid_signal_handle".into())
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorCode::SignalReceiveContextMismatch,
+                "invalid_signal_handle",
+            )
+        })
 }
 fn string_result(
     mut env: JNIEnv,
-    body: impl FnOnce(&mut JNIEnv) -> Result<String, String>,
+    body: impl FnOnce(&mut JNIEnv) -> Result<String, AppError>,
 ) -> jstring {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&mut env)));
     if env.exception_check().unwrap_or(false) {
@@ -128,7 +154,10 @@ fn string_result(
     let output = match result {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => super::err_json(e),
-        Err(_) => super::err_json("signal_native_panic".into()),
+        Err(_) => super::err_json(AppError::new(
+            ErrorCode::RuntimeExecutionPanicked,
+            "signal native panic",
+        )),
     };
     match env.new_string(output) {
         Ok(s) => s.into_raw(),
@@ -145,8 +174,12 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeCreateSignal
 ) -> jstring {
     string_result(env, |env| {
         let context = super::read_jstring(env, &context)?;
-        let identity: SessionIdentity =
-            serde_json::from_str(&context).map_err(|_| "signal_context_mismatch".to_string())?;
+        let identity: SessionIdentity = serde_json::from_str(&context).map_err(|_| {
+            AppError::new(
+                ErrorCode::SignalReceiveContextMismatch,
+                "signal_context_mismatch",
+            )
+        })?;
         let class = env.get_object_class(&callback).map_err(super::jni_err)?;
         env.get_method_id(class, "enqueue", "(JLjava/lang/String;J)Z")
             .map_err(super::jni_err)?;
@@ -158,13 +191,16 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeCreateSignal
             pending: Mutex::new(HashMap::new()),
         });
         let session =
-            ExternalSignalSession::new(identity, sender.clone()).map_err(|e| e.to_string())?;
+            ExternalSignalSession::new(identity, sender.clone()).map_err(|e| e.app_error())?;
         let mut random = [0u8; 16];
         rand::rngs::OsRng.fill_bytes(&mut random);
         let handle = p2premote_punch::easyp2p::crypto::hex(&random);
         let mut registry = sessions().lock().unwrap();
         if registry.len() >= 32 {
-            return Err("signal_queue_full".into());
+            return Err(AppError::new(
+                ErrorCode::SignalSendQueueFull,
+                "signal_queue_full",
+            ));
         }
         registry.insert(handle.clone(), Arc::new(Entry { session, sender }));
         Ok(json!({"ok": true, "handle_id": handle}).to_string())
@@ -181,24 +217,41 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeRegisterSign
     string_result(env, |env| {
         let entry = find(&super::read_jstring(env, &handle)?)?;
         let data: serde_json::Value = serde_json::from_str(&super::read_jstring(env, &call)?)
-            .map_err(|_| "signal_context_mismatch".to_string())?;
+            .map_err(|_| {
+                AppError::new(
+                    ErrorCode::SignalReceiveContextMismatch,
+                    "signal_context_mismatch",
+                )
+            })?;
         let id = data
             .get("call_id")
             .and_then(|v| v.as_str())
-            .ok_or("signal_context_mismatch")?;
-        let uid = data
-            .get("token")
-            .and_then(|v| v.as_str())
-            .ok_or("signal_context_mismatch")?;
+            .ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::SignalReceiveContextMismatch,
+                    "signal_context_mismatch",
+                )
+            })?;
+        let uid = data.get("token").and_then(|v| v.as_str()).ok_or_else(|| {
+            AppError::new(
+                ErrorCode::SignalReceiveContextMismatch,
+                "signal_context_mismatch",
+            )
+        })?;
         let millis = data
             .get("timeout_ms")
             .and_then(|v| v.as_u64())
             .filter(|v| *v > 0 && *v <= 300_000)
-            .ok_or("signal_context_mismatch")?;
+            .ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::SignalReceiveContextMismatch,
+                    "signal_context_mismatch",
+                )
+            })?;
         entry
             .session
             .register_call(id, uid, Duration::from_millis(millis))
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.app_error())?;
         Ok(json!({"ok": true}).to_string())
     })
 }
@@ -214,20 +267,34 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeDeliverSigna
     string_result(env, |env| {
         let entry = find(&super::read_jstring(env, &handle)?)?;
         let identity: serde_json::Value =
-            serde_json::from_str(&super::read_jstring(env, &identity)?)
-                .map_err(|_| "signal_context_mismatch".to_string())?;
+            serde_json::from_str(&super::read_jstring(env, &identity)?).map_err(|_| {
+                AppError::new(
+                    ErrorCode::SignalReceiveContextMismatch,
+                    "signal_context_mismatch",
+                )
+            })?;
         let connection = identity
             .get("connection_id")
             .and_then(|v| v.as_str())
-            .ok_or("signal_context_mismatch")?;
+            .ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::SignalReceiveContextMismatch,
+                    "signal_context_mismatch",
+                )
+            })?;
         let source = identity
             .get("source_device_id")
             .and_then(|v| v.as_i64())
-            .ok_or("signal_context_mismatch")?;
+            .ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::SignalReceiveContextMismatch,
+                    "signal_context_mismatch",
+                )
+            })?;
         entry
             .session
             .deliver_json(connection, source, &super::read_jstring(env, &frame)?)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.app_error())?;
         Ok(json!({"ok": true}).to_string())
     })
 }
@@ -261,17 +328,24 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeExchangeWith
     string_result(env, |env| {
         let entry = find(&super::read_jstring(env, &handle)?)?;
         let request: p2premote_punch::ExchangeInput =
-            serde_json::from_str(&super::read_jstring(env, &request)?)
-                .map_err(|_| "signal_context_mismatch".to_string())?;
-        let call = entry
-            .session
-            .lookup_call("wg-config")
-            .ok_or("signal_context_mismatch")?;
+            serde_json::from_str(&super::read_jstring(env, &request)?).map_err(|_| {
+                AppError::new(
+                    ErrorCode::SignalReceiveContextMismatch,
+                    "signal_context_mismatch",
+                )
+            })?;
+        let call = entry.session.lookup_call("wg-config").ok_or_else(|| {
+            AppError::new(
+                ErrorCode::SignalReceiveContextMismatch,
+                "signal_context_mismatch",
+            )
+        })?;
         let timeout = Duration::from_secs(request.timeout_secs.max(1) as u64);
         let result = super::block_on_blocking(p2premote_punch::api::exchange_with_signal(
             request, timeout, call,
         ))??;
-        serde_json::to_string(&result).map_err(|_| "signal_encode_failed".into())
+        serde_json::to_string(&result)
+            .map_err(|_| AppError::new(ErrorCode::NativeEncodeFailed, "signal_encode_failed"))
     })
 }
 
@@ -287,12 +361,18 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeStartUdpTunn
         let entry = find(&super::read_jstring(env, &handle)?)?;
         let id = super::read_jstring(env, &call_id)?;
         let request: p2premote_punch::UdpTunnelInput =
-            serde_json::from_str(&super::read_jstring(env, &request)?)
-                .map_err(|_| "signal_context_mismatch".to_string())?;
-        let call = entry
-            .session
-            .lookup_call(&id)
-            .ok_or("signal_context_mismatch")?;
+            serde_json::from_str(&super::read_jstring(env, &request)?).map_err(|_| {
+                AppError::new(
+                    ErrorCode::SignalReceiveContextMismatch,
+                    "signal_context_mismatch",
+                )
+            })?;
+        let call = entry.session.lookup_call(&id).ok_or_else(|| {
+            AppError::new(
+                ErrorCode::SignalReceiveContextMismatch,
+                "signal_context_mismatch",
+            )
+        })?;
         let budget = Duration::from_secs(request.timeout_secs.max(1) as u64 + 10);
         let result = super::block_on_blocking(p2premote_punch::api::start_udp_tunnel_with_signal(
             request,
@@ -302,13 +382,9 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeStartUdpTunn
         let signal_failure = result.as_ref().err().and_then(|_| call.failure());
         entry.session.close_call(&id);
         match result {
-            Ok(tunnel) => serde_json::to_string(&tunnel).map_err(|_| "signal_encode_failed".into()),
-            Err(error) => Ok(json!({
-                "ok": false,
-                "signal_failed": signal_failure.is_some(),
-                "error": signal_failure.unwrap_or(error)
-            })
-            .to_string()),
+            Ok(tunnel) => serde_json::to_string(&tunnel)
+                .map_err(|_| AppError::new(ErrorCode::NativeEncodeFailed, "signal_encode_failed")),
+            Err(error) => Ok(super::tunnel_error_json(error, signal_failure)),
         }
     })
 }

@@ -17,16 +17,15 @@ final class TraversalPolicy {
                 && !((address[0] & 0xff) == 0x20 && (address[1] & 0xff) == 1
                 && (address[2] & 0xff) == 0x0d && (address[3] & 0xff) == 0xb8);
     }
-    static boolean tcpRetryRecommended(boolean preferTcp, String error) {
-        if (!preferTcp || error == null || !error.startsWith("punch_exhausted:")) return false;
-        for (String network : error.substring("punch_exhausted:".length()).split(",")) {
-            if (network.equals("tcp4") || network.equals("tcp6")) return true;
-        }
-        return false;
+    static boolean tcpRetryRecommended(boolean preferTcp, String code, List<String> attempted) {
+        return preferTcp && (ErrorCodes.TraversalExecutionExhausted.equals(code)
+                || "next_network_or_attempt".equals(ErrorCodes.retryClass(code)))
+                && (attempted.contains("tcp4") || attempted.contains("tcp6"));
     }
 
     static boolean symmetricNatHelpRecommended(String errorCode, String localNatType, String remoteNatType) {
-        return "hole_punch_wait_timeout".equals(errorCode)
+        return (ErrorCodes.TraversalPunchTimeout.equals(errorCode) || ErrorCodes.TraversalPunchFailed.equals(errorCode)
+                || ErrorCodes.TraversalExecutionExhausted.equals(errorCode) || ErrorCodes.TraversalCandidateSelectionNoUsableCandidate.equals(errorCode))
                 && ("symm".equalsIgnoreCase(localNatType) || "symm".equalsIgnoreCase(remoteNatType));
     }
     static int negotiateLanProbeBudget(Integer local, Integer remote) {

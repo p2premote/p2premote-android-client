@@ -21,7 +21,7 @@ final class TraversalClient implements AutoCloseable {
     private final java.util.function.Supplier<Boolean> ipv6Availability;
     private final ArrayBlockingQueue<JSONObject> inbox = new ArrayBlockingQueue<>(64);
     private volatile JSONObject ready;
-    private volatile String signalError;
+    private volatile AppException signalError;
     private volatile PunchSignalClient signal;
     private volatile boolean wsSignalSelected;
     // p2p/end 上报用：主动端发出的提议与被动端响应确认的选择（逗号连接，空=未走新协商）。
@@ -31,6 +31,8 @@ final class TraversalClient implements AutoCloseable {
     private volatile String localNatType = "";
     private volatile String remoteNatType = "";
     private volatile String lastNetwork = "";
+    private final List<String> attemptedInternetNetworks = new ArrayList<>();
+    List<String> attemptedNetworks() { return new ArrayList<>(attemptedInternetNetworks); }
 
     TraversalClient(WsConnection ws, ApiClient.OpenResult opened, long peer, String attempt,
                     ConnectionPreferences preferences, java.util.function.Supplier<Boolean> ipv6Availability, Check check) {
@@ -38,7 +40,7 @@ final class TraversalClient implements AutoCloseable {
         this.preferences = preferences; this.check = check;
         this.ipv6Availability = ipv6Availability;
         ws.setTraversalListener(opened.connectionId, peer, attempt, this::receive, () -> {
-            if (wsSignalSelected) { signalError = "signal_connection_lost"; cancelSignal(); }
+            if (wsSignalSelected) { signalError = new AppException(ErrorCodes.SignalSendDisconnected, "signal connection lost"); cancelSignal(); }
         });
     }
     JSONObject negotiation() throws Exception {
@@ -48,28 +50,35 @@ final class TraversalClient implements AutoCloseable {
     private void receive(JSONObject data) {
         String type = data.optString("type");
         if ("attempt_ready".equals(type)) ready = data;
-        else if ("attempt_failed".equals(type) || "attempt_cancel".equals(type)) { signalError = "peer_traversal_failed"; cancelSignal(); }
+        else if ("attempt_failed".equals(type) || "attempt_cancel".equals(type)) {
+            JSONObject error = data.optJSONObject("error");
+            signalError = "attempt_cancel".equals(type)
+                    ? new AppException(ErrorCodes.ConnectionExecutionPeerCancelled, "对端取消连接")
+                    : new AppException(error == null ? ErrorCodes.NativeDecodeInvalidPayload : error.optString("error_code"),
+                            error == null ? "对端失败消息缺少错误码" : error.optString("message"));
+            cancelSignal();
+        }
         else if ("punch_signal".equals(type)) {
             try {
                 PunchSignalClient active = signal;
-                if (!wsSignalSelected || active == null) throw new IllegalStateException("signal_transport_mismatch");
+                if (!wsSignalSelected || active == null) throw new AppException(ErrorCodes.SignalTransportSelectInvalidSelection, "signal_transport_mismatch");
                 active.receive(data);
-            } catch (Exception error) { signalError = error.getMessage(); cancelSignal(); }
+            } catch (Exception error) { signalError = AppException.from(error); cancelSignal(); }
         }
         else if ("traversal".equals(type)) {
             JSONObject frame = data.optJSONObject("frame");
-            if (frame == null || !inbox.offer(frame)) signalError = "invalid_traversal_frame";
+            if (frame == null || !inbox.offer(frame)) signalError = new AppException(ErrorCodes.SignalReceiveInvalidFrame, "invalid traversal frame");
         }
     }
     boolean negotiated() throws Exception {
-        if (ready == null) throw new IllegalStateException("missing_traversal_ready");
+        if (ready == null) throw new AppException(ErrorCodes.TraversalPlanNegotiationInvalidPayload, "missing_traversal_ready");
         if (!ready.has("traversal_negotiation") || ready.isNull("traversal_negotiation")) return false;
         JSONObject accepted = ready.getJSONObject("traversal_negotiation");
         JSONObject p = accepted.getJSONObject("preferences");
         if (accepted.getInt("version") != TraversalPolicy.VERSION
                 || p.getBoolean("prefer_ipv6") != preferences.ipv6
                 || p.getBoolean("prefer_tcp") != preferences.tcp) {
-            throw new IllegalStateException("traversal_preference_mismatch");
+            throw new AppException(ErrorCodes.TraversalPlanNegotiationMismatch, "traversal_preference_mismatch");
         }
         return true;
     }
@@ -83,7 +92,7 @@ final class TraversalClient implements AutoCloseable {
             try {
                 created.register("wg-config", token + "-kx", 120_000);
                 check.run();
-                if (signalError != null) throw new IllegalStateException(signalError);
+                if (signalError != null) throw signalError;
             } catch (Exception error) { created.close(); throw error; }
         }
     }
@@ -91,7 +100,7 @@ final class TraversalClient implements AutoCloseable {
         check.run();
         if (!wsSignalSelected) return PunchNative.exchange(token, payload, "active", 0, timeout);
         PunchSignalClient active = signal;
-        if (active == null) throw new IllegalStateException("signal_context_mismatch");
+        if (active == null) throw new AppException(ErrorCodes.SignalReceiveContextMismatch, "signal_context_mismatch");
         return active.exchange(token, payload, timeout);
     }
     void cancelSignal() {
@@ -102,7 +111,7 @@ final class TraversalClient implements AutoCloseable {
         check.run();
         if (!ws.sendNotifyWaitAck(opened.connectionId, peer, ApiClient.buildMessageId(), opened.accessGrant,
                 new JSONObject().put("type", "traversal").put("attempt_id", attempt).put("frame", frame).toString())) {
-            throw new IllegalStateException("traversal_signal_failed");
+            throw new AppException(ErrorCodes.SignalSendRejected, "traversal_signal_failed");
         }
     }
     private static int stage(String kind) {
@@ -125,16 +134,18 @@ final class TraversalClient implements AutoCloseable {
         long end = android.os.SystemClock.elapsedRealtime() + timeoutMillis;
         while (android.os.SystemClock.elapsedRealtime() < end) {
             check.run();
-            if (signalError != null) throw new IllegalStateException(signalError);
+            if (signalError != null) throw signalError;
             JSONObject frame = inbox.poll(200, TimeUnit.MILLISECONDS);
             if (frame == null) continue;
             int receivedRound = frame.optInt("round", 0);
             int receivedStage = stage(frame.optString("kind"));
             if (receivedRound < round || (receivedRound == round && receivedStage < stage(kind))) continue;
-            if (receivedRound != round || !kind.equals(frame.optString("kind"))) throw new IllegalStateException("invalid_traversal_sequence");
+            if (receivedRound != round || !kind.equals(frame.optString("kind"))) throw new AppException(ErrorCodes.TraversalRoundSyncInvalidSequence, "invalid_traversal_sequence");
             return frame;
         }
-        throw new IllegalStateException("traversal_signal_timeout");
+        throw new AppException("capabilities".equals(kind) ? ErrorCodes.TraversalCapabilityExchangeTimeout
+                : "plan".equals(kind) || "plan_ack".equals(kind) ? ErrorCodes.TraversalPlanNegotiationTimeout
+                : ErrorCodes.TraversalRoundSyncTimeout, "traversal wait timed out");
     }
     private static JSONObject frame(String kind, int round) throws Exception {
         JSONObject result = new JSONObject().put("kind", kind);
@@ -142,7 +153,7 @@ final class TraversalClient implements AutoCloseable {
         return result;
     }
     private static List<TraversalPolicy.Evidence> evidence(JSONArray values) throws Exception {
-        if (values.length() > 32) throw new IllegalStateException("invalid_traversal_capabilities");
+        if (values.length() > 32) throw new AppException(ErrorCodes.TraversalCapabilityExchangeInvalidPayload, "invalid_traversal_capabilities");
         List<TraversalPolicy.Evidence> result = new ArrayList<>();
         for (int i = 0; i < values.length(); i++) {
             JSONObject value = values.getJSONObject(i);
@@ -151,13 +162,14 @@ final class TraversalClient implements AutoCloseable {
         return result;
     }
     PunchNative.TunnelResult start(JSONObject template) throws Exception {
-        if (!negotiated()) return PunchNative.startUdpTunnel(template.toString());
+        if (!negotiated()) return accept(PunchNative.startUdpTunnel(template.toString()));
         check.run();
         if (wsSignalSelected) signal.closeCall("wg-config");
         JSONArray local = new JSONArray(PunchNative.nativeDetectNat());
         // Limit duplicates from multi-interface native detection.
         JSONArray bounded = new JSONArray();
         for (int i = 0; i < Math.min(local.length(), 32); i++) bounded.put(local.getJSONObject(i));
+        localNatType = TraversalPolicy.udp4NatType(evidence(bounded));
         Boolean ipv6 = ipv6Availability.get();
         JSONObject capabilities = frame("capabilities", 0).put("evidence", bounded)
                 .put("ipv6_gate_supported", true)
@@ -168,11 +180,11 @@ final class TraversalClient implements AutoCloseable {
         JSONArray remote = remoteCapabilities.getJSONArray("evidence");
         Object remoteValue = remoteCapabilities.opt("ipv6_available");
         if (remoteValue != null && remoteValue != JSONObject.NULL && !(remoteValue instanceof Boolean)) {
-            throw new IllegalStateException("invalid_traversal_capabilities");
+            throw new AppException(ErrorCodes.TraversalCapabilityExchangeInvalidPayload, "invalid_traversal_capabilities");
         }
         Boolean remoteIpv6 = remoteValue instanceof Boolean ? (Boolean) remoteValue : null;
         Object gateValue = remoteCapabilities.opt("ipv6_gate_supported");
-        if (gateValue != null && !(gateValue instanceof Boolean)) throw new IllegalStateException("invalid_traversal_capabilities");
+        if (gateValue != null && !(gateValue instanceof Boolean)) throw new AppException(ErrorCodes.TraversalCapabilityExchangeInvalidPayload, "invalid_traversal_capabilities");
         boolean remoteGate = Boolean.TRUE.equals(gateValue);
         Object remoteLanBudgetValue = remoteCapabilities.opt("lan_probe_budget_secs");
         Integer remoteLanBudget = null;
@@ -180,7 +192,7 @@ final class TraversalClient implements AutoCloseable {
             if (!(remoteLanBudgetValue instanceof Number)
                     || ((Number) remoteLanBudgetValue).doubleValue()
                     != ((Number) remoteLanBudgetValue).intValue()) {
-                throw new IllegalStateException("invalid_lan_probe_budget");
+                throw new AppException(ErrorCodes.TraversalCapabilityExchangeInvalidPayload, "invalid_lan_probe_budget");
             }
             remoteLanBudget = ((Number) remoteLanBudgetValue).intValue();
         }
@@ -207,10 +219,11 @@ final class TraversalClient implements AutoCloseable {
             acknowledged.append(accepted.getString(i));
         }
         acknowledgedNetworks = acknowledged.toString();
-        if (accepted.length() != plan.size()) throw new IllegalStateException("traversal_plan_mismatch");
-        for (int i = 0; i < plan.size(); i++) if (!plan.get(i).equals(accepted.getString(i))) throw new IllegalStateException("traversal_plan_mismatch");
+        if (accepted.length() != plan.size()) throw new AppException(ErrorCodes.TraversalPlanNegotiationMismatch, "traversal_plan_mismatch");
+        for (int i = 0; i < plan.size(); i++) if (!plan.get(i).equals(accepted.getString(i))) throw new AppException(ErrorCodes.TraversalPlanNegotiationMismatch, "traversal_plan_mismatch");
         List<String> rounds = new ArrayList<>();
         List<String> attemptedNetworks = new ArrayList<>();
+        AppException lastError = null;
         rounds.add("udp4"); rounds.addAll(plan);
         for (int i = 0; i < rounds.size(); i++) {
             check.run();
@@ -225,33 +238,49 @@ final class TraversalClient implements AutoCloseable {
             JSONObject request = new JSONObject(template.toString()).put("network", network).put("traversal_mode", mode)
                     .put("token", token).put("timeout_secs", seconds);
             boolean skipIpv6 = network.endsWith("6") && Boolean.FALSE.equals(ipv6);
-            if ("internet".equals(mode) && !skipIpv6) attemptedNetworks.add(network);
+            if ("internet".equals(mode) && !skipIpv6) { attemptedNetworks.add(network); attemptedInternetNetworks.add(network); }
             PunchNative.TunnelResult owned;
             try {
                 owned = skipIpv6 ? null : wsSignalSelected ? signal.start(callId, request) : PunchNative.startUdpTunnel(request.toString());
             } finally { if (wsSignalSelected) signal.closeCall(callId); }
-            if (owned != null && owned.getSignalFailed()) {
-                throw new IllegalStateException(owned.getError());
-            }
-            if (owned != null && !owned.getOK()) {
+            if (owned != null) {
                 if (!owned.getLocalNATType().isEmpty()) localNatType = owned.getLocalNATType();
                 if (!owned.getRemoteNATType().isEmpty()) remoteNatType = owned.getRemoteNATType();
                 if (!owned.getNetwork().isEmpty()) lastNetwork = owned.getNetwork();
             }
+            if (owned != null && owned.getSignalFailed()) {
+                throw new AppException(owned.getErrorCode(), owned.getError());
+            }
+            AppException localError = owned != null && !owned.getOK()
+                    ? new AppException(owned.getErrorCode(), owned.getError()) : null;
+            AppException roundError;
             boolean transferred = false;
             try {
                 check.run();
                 boolean localOk = owned != null && owned.getOK();
-                send(frame("result", round).put("ok", localOk));
-                boolean success = waitFrame(round, "result", seconds * 1000L + 12_000).getBoolean("ok") && localOk;
+                send(TraversalRoundError.result(round, localOk, localError));
+                JSONObject peerResult = waitFrame(round, "result", seconds * 1000L + 12_000);
+                roundError = TraversalRoundError.choose(localError, TraversalRoundError.fromPeer(peerResult));
+                boolean success = peerResult.getBoolean("ok") && localOk;
                 send(frame(success ? "commit" : "close", round));
                 waitFrame(round, success ? "committed" : "closed");
                 if (success) { transferred = true; return owned; }
             } finally {
                 if (!transferred && owned != null && owned.getOK()) PunchNative.stopUdpTunnel(owned.getHandleID());
             }
+            if (roundError != null) {
+                if (!TraversalRoundError.canAdvance(roundError)) throw roundError;
+                lastError = roundError;
+            }
         }
-        throw new IllegalStateException("punch_exhausted:" + String.join(",", attemptedNetworks));
+        if (lastError != null) throw lastError;
+        throw new AppException(ErrorCodes.TraversalExecutionExhausted, "打洞轮次均未成功：" + String.join(",", attemptedNetworks));
+    }
+    private PunchNative.TunnelResult accept(PunchNative.TunnelResult result) {
+        if (!result.getLocalNATType().isEmpty()) localNatType = result.getLocalNATType();
+        if (!result.getRemoteNATType().isEmpty()) remoteNatType = result.getRemoteNATType();
+        if (!result.getNetwork().isEmpty()) lastNetwork = result.getNetwork();
+        return result;
     }
     @Override public void close() { cancelSignal(); ws.clearTraversalListener(attempt); }
     String traversalPlan() { return proposedNetworks; }
@@ -260,8 +289,6 @@ final class TraversalClient implements AutoCloseable {
     String remoteNatType() { return remoteNatType; }
     /** 最后一次实际调用的网络；没有调用记录时回退计划首选网络。 */
     String selectedNetwork() {
-        if (!lastNetwork.isEmpty()) return lastNetwork;
-        int comma = proposedNetworks.indexOf(',');
-        return comma > 0 ? proposedNetworks.substring(0, comma) : proposedNetworks;
+        return lastNetwork;
     }
 }

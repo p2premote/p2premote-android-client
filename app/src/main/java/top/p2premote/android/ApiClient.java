@@ -147,13 +147,13 @@ final class ApiClient {
     OpenResult openP2P(String clientJobId, DeviceItem target) throws Exception {
         Session session = sessionStore.require();
         if (session.deviceId <= 0 || session.deviceUuid.isEmpty()) {
-            throw new IllegalStateException("本机设备尚未注册");
+            throw new AppException(ErrorCodes.RuntimeDeviceNotRegistered, "本机设备尚未注册");
         }
         if (target.uuid.isEmpty()) {
-            throw new IllegalStateException("目标设备缺少 UUID");
+            throw new AppException(ErrorCodes.ConnectionAuthorizeInvalidRequest, "目标设备缺少 UUID");
         }
         if (!target.canAcceptP2P()) {
-            throw new IllegalStateException("Android 设备不能作为连接目标");
+            throw new AppException(ErrorCodes.ConnectionAuthorizeInvalidRequest, "Android 设备不能作为连接目标");
         }
 
         JSONObject req = new JSONObject();
@@ -468,7 +468,7 @@ final class ApiClient {
             int code = envelope.optInt("code", -1);
             String msg = envelope.optString("msg", "请求失败");
             if (status >= 400 || code != 0) {
-                throw new ApiException(status, code, msg);
+                throw new ApiException(status, code, msg, envelope.optString("error_code"));
             }
 
             Object data = envelope.opt("data");
@@ -526,11 +526,13 @@ final class ApiClient {
 
     static final class ApiException extends Exception {
         final int httpStatus;
+        final String errorCode;
         final int code;
 
-        ApiException(int httpStatus, int code, String message) {
+        ApiException(int httpStatus, int code, String message, String errorCode) {
             super(message);
             this.httpStatus = httpStatus;
+            this.errorCode = ErrorCodes.valid(errorCode) ? errorCode : ErrorCodes.NativeDecodeInvalidPayload;
             this.code = code;
         }
     }

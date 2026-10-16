@@ -13,6 +13,7 @@
 //! like the Go mobile binding did (the Rust core expects the caller to pass
 //! the already-suffixed session uid).
 
+use p2premote_punch::error::{AppError, ErrorCode};
 use std::sync::Mutex;
 mod signal;
 use std::time::Duration;
@@ -54,7 +55,7 @@ fn protect_via_jni(vm: &JavaVM, callback: &GlobalRef, fd: i32) -> bool {
 /// runtime does not).
 static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
 
-fn block_on_blocking<F: std::future::Future>(future: F) -> Result<F::Output, String> {
+fn block_on_blocking<F: std::future::Future>(future: F) -> Result<F::Output, AppError> {
     let runtime = RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -65,21 +66,33 @@ fn block_on_blocking<F: std::future::Future>(future: F) -> Result<F::Output, Str
 }
 
 fn throw_and_null(mut env: JNIEnv, message: String) -> jstring {
-    let _ = env.throw_new("java/lang/RuntimeException", message);
+    let _ = env.throw_new("java/lang/RuntimeException", message.to_string());
     std::ptr::null_mut()
 }
 
-fn read_jstring(env: &mut JNIEnv, value: &JString) -> Result<String, String> {
-    env.get_string(value)
-        .map(|s| s.into())
-        .map_err(|err| format!("read string failed: {err}"))
+fn read_jstring(env: &mut JNIEnv, value: &JString) -> Result<String, AppError> {
+    env.get_string(value).map(|s| s.into()).map_err(jni_err)
 }
 
-fn err_json(message: String) -> String {
-    format!(
-        r#"{{"ok":false,"error":{}}}"#,
-        serde_json::Value::String(message)
-    )
+fn err_json(error: AppError) -> String {
+    serde_json::json!({"ok": false, "error_code": error.code().as_str(), "message": error.to_string()}).to_string()
+}
+
+fn tunnel_error_json(
+    failure: p2premote_punch::easyp2p::udp_tunnel::StartError,
+    signal: Option<p2premote_punch::easyp2p::P2pError>,
+) -> String {
+    let error = signal
+        .as_ref()
+        .map(|e| e.app_error())
+        .unwrap_or(failure.error);
+    let mut result = failure.tunnel_result.unwrap_or_default();
+    result.ok = false;
+    result.error_code = error.code().as_str().to_owned();
+    result.error = error.to_string();
+    let mut value = serde_json::to_value(result).expect("tunnel fields are JSON values");
+    value["signal_failed"] = serde_json::Value::Bool(signal.is_some());
+    value.to_string()
 }
 
 #[no_mangle]
@@ -92,7 +105,7 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeSetProtectCa
         if callback.is_null() {
             *PROTECT_STATE.lock().unwrap() = None;
             p2premote_punch::easyp2p::socketprotect::set_socket_protect(None);
-            return Ok::<(), String>(());
+            return Ok::<(), AppError>(());
         }
         // Validate the callback method early so registration failures surface
         // at set time instead of on the first socket creation.
@@ -119,7 +132,7 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeSetProtectCa
     match result {
         Ok(Ok(())) => {}
         Ok(Err(message)) => {
-            let _ = env.throw_new("java/lang/RuntimeException", message);
+            let _ = env.throw_new("java/lang/RuntimeException", message.to_string());
         }
         Err(_) => {
             let _ = env.throw_new(
@@ -130,8 +143,8 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeSetProtectCa
     }
 }
 
-fn jni_err(err: jni::errors::Error) -> String {
-    format!("JNI error: {err}")
+fn jni_err(err: jni::errors::Error) -> AppError {
+    AppError::with_source(ErrorCode::NativeJniFailed, "JNI operation failed", err)
 }
 
 #[no_mangle]
@@ -149,7 +162,10 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeExchange(
         let send_data: String = read_jstring(&mut env, &send_data)?;
         let role_hint: String = read_jstring(&mut env, &role_hint)?;
         if token.is_empty() {
-            return Err("token is required".to_string());
+            return Err(AppError::new(
+                ErrorCode::NativeInputInvalidArgument,
+                "token is required",
+            ));
         }
         // Go mobile binding parity: the key-exchange session uid is the punch
         // token suffixed with "-kx" so active/passive land on the same topic.
@@ -172,11 +188,17 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeExchange(
     // side cannot parse (it saw ok=false with an empty error).
     let output = match result {
         Ok(Ok(Ok(result))) => serde_json::to_string(&result).unwrap_or_else(|_| {
-            r#"{"ok":false,"error":"failed to encode exchange result"}"#.to_string()
+            err_json(AppError::new(
+                ErrorCode::NativeEncodeFailed,
+                "failed to encode exchange result",
+            ))
         }),
-        Ok(Ok(Err(message))) => err_json(message),
+        Ok(Ok(Err(error))) => err_json(error.into()),
         Ok(Err(message)) => err_json(message),
-        Err(_) => err_json("internal error: punch library panicked".to_string()),
+        Err(_) => err_json(AppError::new(
+            ErrorCode::RuntimeExecutionPanicked,
+            "punch library panicked",
+        )),
     };
     match env.new_string(output) {
         Ok(value) => value.into_raw(),
@@ -192,9 +214,14 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeStartUdpTunn
 ) -> jstring {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let request_json: String = read_jstring(&mut env, &request_json)?;
-        let request: p2premote_punch::types::UdpTunnelInput =
-            serde_json::from_str(&request_json)
-                .map_err(|err| format!("invalid request json: {err}"))?;
+        let request: p2premote_punch::types::UdpTunnelInput = serde_json::from_str(&request_json)
+            .map_err(|err| {
+            AppError::with_source(
+                ErrorCode::NativeInputInvalidArgument,
+                "invalid request JSON",
+                err,
+            )
+        })?;
         let timeout = if request.timeout_secs <= 0 {
             45
         } else {
@@ -210,13 +237,19 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeStartUdpTunn
     // {"Ok":{...}} wrapper instead of the flat JSON contract Java parses.
     let output = match result {
         Ok(Ok(Ok(result))) => serde_json::to_string(&result).unwrap_or_else(|_| {
-            r#"{"ok":false,"error":"failed to encode tunnel result"}"#.to_string()
+            err_json(AppError::new(
+                ErrorCode::NativeEncodeFailed,
+                "failed to encode tunnel result",
+            ))
         }),
         // The core returns Err(String) for tunnel failures; surface it as the
         // JSON error contract the Java side already parses.
-        Ok(Ok(Err(message))) => err_json(message),
+        Ok(Ok(Err(error))) => tunnel_error_json(error, None),
         Ok(Err(message)) => err_json(message),
-        Err(_) => err_json("internal error: punch library panicked".to_string()),
+        Err(_) => err_json(AppError::new(
+            ErrorCode::RuntimeExecutionPanicked,
+            "punch library panicked",
+        )),
     };
     match env.new_string(output) {
         Ok(value) => value.into_raw(),
@@ -233,7 +266,7 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeStopUdpTunne
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let handle_id: String = read_jstring(&mut env, &handle_id)?;
         if handle_id.is_empty() {
-            return Ok::<bool, String>(false);
+            return Ok::<bool, AppError>(false);
         }
         p2premote_punch::api::stop_udp_tunnel(&handle_id);
         Ok(true)
@@ -241,7 +274,7 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeStopUdpTunne
     match result {
         Ok(Ok(value)) => value as jboolean,
         Ok(Err(message)) => {
-            let _ = env.throw_new("java/lang/RuntimeException", message);
+            let _ = env.throw_new("java/lang/RuntimeException", message.to_string());
             0
         }
         Err(_) => {

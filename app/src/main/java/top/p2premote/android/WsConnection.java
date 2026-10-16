@@ -104,7 +104,7 @@ public final class WsConnection {
     }
     long socketGeneration() { return socketGeneration.get(); }
     private void cancelSignalWaiters() {
-        signalAcks.values().forEach(f -> f.complete("signal_connection_lost"));
+        signalAcks.values().forEach(f -> f.complete(ErrorCodes.SignalSendDisconnected));
         signalAcks.clear();
         TraversalBinding binding = traversalBinding;
         if (binding != null) binding.disconnected.run();
@@ -257,17 +257,17 @@ public final class WsConnection {
             JSONObject payload = new JSONObject().put("connection_id", connectionId).put("target_device_id", targetDeviceId)
                     .put("message_id", messageId).put("access_grant", accessGrant).put("data", data);
             synchronized (connectionLock) {
-                if (!connected.get() || generation != socketGeneration.get() || webSocket == null || !webSocket.isOpen()) return "signal_connection_lost";
+                if (!connected.get() || generation != socketGeneration.get() || webSocket == null || !webSocket.isOpen()) return ErrorCodes.SignalSendDisconnected;
                 webSocket.send(new JSONObject().put("type", "p2p_notify").put("payload", payload).toString());
             }
             String result = future.get(Math.max(1, Math.min(5000, timeoutMillis)), TimeUnit.MILLISECONDS);
             return result.isEmpty() ? null : result;
         } catch (java.util.concurrent.TimeoutException error) {
-            return "signal_server_ack_timeout";
+            return ErrorCodes.SignalSendTimeout;
         } catch (InterruptedException error) {
-            Thread.currentThread().interrupt(); return "signal_cancelled";
+            Thread.currentThread().interrupt(); return ErrorCodes.SignalReceiveCancelled;
         } catch (Exception error) {
-            return "signal_connection_lost";
+            return ErrorCodes.SignalSendDisconnected;
         } finally { signalAcks.remove(messageId, future); }
     }
 
@@ -446,7 +446,7 @@ public final class WsConnection {
                 java.util.concurrent.CompletableFuture<String> signalFuture = signalAcks.remove(messageId);
                 if (signalFuture != null) {
                     JSONObject error = payload.optJSONObject("error");
-                    signalFuture.complete(accepted ? "" : error == null ? "signal_server_rejected" : error.optString("code", "signal_server_rejected"));
+                    signalFuture.complete(accepted ? "" : error == null ? ErrorCodes.SignalSendRejected : ErrorCodes.SignalSendRejected);
                 }
                 if (future != null) {
                     future.complete(accepted);
@@ -520,6 +520,12 @@ public final class WsConnection {
             String attemptId = data.optString("attempt_id", "");
             switch (type) {
                 case "attempt_ready": {
+                    try {
+                        SignalTransport.requireErrorContract(data);
+                    } catch (AppException error) {
+                        listener.onNotify("attempt_failed", attemptId, 0, false, 0L, error);
+                        break;
+                    }
                     int rdpPort = data.optInt("rdp_port", 0);
                     boolean approvalRequired = data.optBoolean("approval_required", false);
                     listener.onNotify(type, attemptId, rdpPort, approvalRequired, 0L, null);
@@ -538,7 +544,8 @@ public final class WsConnection {
                 }
                 case "attempt_failed": {
                     JSONObject err = data.optJSONObject("error");
-                    String errMsg = err != null ? err.optString("message", "unknown") : "unknown";
+                    AppException errMsg = new AppException(err == null ? ErrorCodes.NativeDecodeInvalidPayload : err.optString("error_code"),
+                            err == null ? "对端失败消息缺少错误码" : err.optString("message"));
                     listener.onNotify(type, attemptId, 0, false, 0L, errMsg);
                     break;
                 }
@@ -624,6 +631,6 @@ public final class WsConnection {
          * @param error     attempt_failed 时的错误信息（attempt_ready 为 null）
          */
         void onNotify(String type, String attemptId, int rdpPort, boolean approvalRequired,
-                      long expiresAt, String error);
+                      long expiresAt, AppException error);
     }
 }

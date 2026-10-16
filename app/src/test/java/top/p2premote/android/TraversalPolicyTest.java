@@ -93,12 +93,13 @@ public class TraversalPolicyTest {
         assertEquals(Arrays.asList("udp6", "udp4"), TraversalPolicy.plan(true, true, Collections.emptyList(), Collections.emptyList(), null, true));
     }
     @Test public void hintRequiresActualPublicTcpExecution() {
-        for (String error : Arrays.asList("punch_exhausted", "punch_exhausted:", "punch_exhausted:udp4,udp6", "traversal_signal_timeout", "peer_cancelled")) {
-            assertFalse(TraversalPolicy.tcpRetryRecommended(true, error));
-        }
-        assertTrue(TraversalPolicy.tcpRetryRecommended(true, "punch_exhausted:tcp4,udp4,udp6"));
-        assertTrue(TraversalPolicy.tcpRetryRecommended(true, "punch_exhausted:tcp6,udp6,udp4"));
-        assertFalse(TraversalPolicy.tcpRetryRecommended(false, "punch_exhausted:tcp4,udp4"));
+        List<String> networks = Arrays.asList("tcp4", "udp4");
+        assertTrue(TraversalPolicy.tcpRetryRecommended(true, ErrorCodes.TraversalPunchTimeout, networks));
+        assertFalse(TraversalPolicy.tcpRetryRecommended(true, ErrorCodes.TraversalLocalForwardIoFailed, networks));
+        assertTrue(TraversalPolicy.tcpRetryRecommended(true, ErrorCodes.TraversalExecutionExhausted, networks));
+        assertFalse(TraversalPolicy.tcpRetryRecommended(false, ErrorCodes.TraversalExecutionExhausted, networks));
+        assertFalse(TraversalPolicy.tcpRetryRecommended(true, ErrorCodes.ConnectionExecutionPeerCancelled, networks));
+        assertFalse(TraversalPolicy.tcpRetryRecommended(true, ErrorCodes.TraversalExecutionExhausted, Arrays.asList("udp4")));
     }
     @Test public void localIpv6AddressesAreNotPublicCapabilities() throws Exception {
         for (String address : Arrays.asList("::", "::1", "fe80::1", "fd00::1", "ff02::1", "2001:db8::1")) {
@@ -113,10 +114,10 @@ public class TraversalPolicyTest {
         assertEquals("", TraversalPolicy.udp4NatType(Collections.<TraversalPolicy.Evidence>emptyList()));
     }
     @Test public void symmetricNatHelpRequiresNetworkPunchFailure() {
-        assertTrue(TraversalPolicy.symmetricNatHelpRecommended("hole_punch_wait_timeout", "symm", "easy"));
-        assertTrue(TraversalPolicy.symmetricNatHelpRecommended("hole_punch_wait_timeout", "hard", "SYMM"));
-        assertFalse(TraversalPolicy.symmetricNatHelpRecommended("internal_error", "symm", "symm"));
-        assertFalse(TraversalPolicy.symmetricNatHelpRecommended("hole_punch_wait_timeout", "hard", "easy"));
+        assertTrue(TraversalPolicy.symmetricNatHelpRecommended(ErrorCodes.TraversalPunchTimeout, "symm", "easy"));
+        assertTrue(TraversalPolicy.symmetricNatHelpRecommended(ErrorCodes.TraversalExecutionExhausted, "hard", "SYMM"));
+        assertFalse(TraversalPolicy.symmetricNatHelpRecommended(ErrorCodes.RuntimeExecutionUnclassified, "symm", "symm"));
+        assertFalse(TraversalPolicy.symmetricNatHelpRecommended(ErrorCodes.TraversalPunchTimeout, "hard", "easy"));
     }
     @Test public void lanBudgetIsShortOnlyWhenBothPeersSupportIt() {
         assertEquals(1, TraversalPolicy.negotiateLanProbeBudget(1, 1));

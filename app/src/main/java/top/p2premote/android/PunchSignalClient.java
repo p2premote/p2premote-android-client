@@ -27,31 +27,32 @@ final class PunchSignalClient implements AutoCloseable, PunchNative.SignalSender
     }
     private static JSONObject checked(String json) throws Exception {
         JSONObject result = new JSONObject(json);
-        if (!result.optBoolean("ok")) throw new IllegalStateException(result.optString("error", "signal_native_failed"));
+        if (!result.optBoolean("ok")) throw new AppException(result.optString("error_code"), result.optString("message", "native signal failed"));
         return result;
     }
     void register(String call, String token, long millis) throws Exception {
-        if (closed.get()) throw new IllegalStateException("signal_cancelled");
+        if (closed.get()) throw new AppException(ErrorCodes.SignalReceiveCancelled, "signal cancelled");
         checked(PunchNative.nativeRegisterSignalCall(handle, new JSONObject().put("call_id", call)
                 .put("token", token).put("timeout_ms", millis).toString()));
     }
     void receive(JSONObject data) throws Exception {
-        if (closed.get() || ws.socketGeneration() != generation) throw new IllegalStateException("signal_connection_lost");
+        if (closed.get() || ws.socketGeneration() != generation) throw new AppException(ErrorCodes.SignalSendDisconnected, "signal connection lost");
         JSONObject identity = new JSONObject().put("connection_id", opened.connectionId).put("source_device_id", peer);
         JSONObject result = new JSONObject(PunchNative.nativeDeliverSignal(handle, identity.toString(), data.toString()));
         if (!result.optBoolean("ok")) {
-            String error = result.optString("error", "signal_native_failed");
-            if (!"stale_signal_frame".equals(error)) { close(); throw new IllegalStateException(error); }
+            String code = result.optString("error_code");
+            AppException error = new AppException(code, result.optString("message", "native signal failed"));
+            if (!ErrorCodes.SignalReceiveStaleFrame.equals(code)) { close(); throw error; }
         }
     }
     PunchNative.ExchangeResult exchange(String token, String data, int timeout) throws Exception {
-        if (closed.get()) throw new IllegalStateException("signal_cancelled");
+        if (closed.get()) throw new AppException(ErrorCodes.SignalReceiveCancelled, "signal cancelled");
         JSONObject request = new JSONObject().put("token", token + "-kx").put("send_data", data)
                 .put("role_hint", "active").put("exmode", 0).put("timeout_secs", timeout);
         return PunchNative.exchangeWithSignal(handle, request.toString());
     }
     PunchNative.TunnelResult start(String call, JSONObject request) throws Exception {
-        if (closed.get()) throw new IllegalStateException("signal_cancelled");
+        if (closed.get()) throw new AppException(ErrorCodes.SignalReceiveCancelled, "signal cancelled");
         return PunchNative.startWithSignal(handle, call, request.toString());
     }
     void closeCall(String call) { if (!closed.get()) PunchNative.nativeCancelSignalCall(handle, call); }
@@ -62,7 +63,7 @@ final class PunchSignalClient implements AutoCloseable, PunchNative.SignalSender
         try {
             sends.execute(() -> {
                 long remaining = deadline - android.os.SystemClock.elapsedRealtime();
-                String error = remaining <= 0 ? "signal_delivery_timeout" : ws.sendSignalWaitAck(opened.connectionId, peer,
+                String error = remaining <= 0 ? ErrorCodes.SignalSendTimeout : ws.sendSignalWaitAck(opened.connectionId, peer,
                         ApiClient.buildMessageId(), opened.accessGrant, data, generation, remaining);
                 PunchNative.nativeCompleteSignalSend(handle, requestId, error == null ? "" : error);
             });
