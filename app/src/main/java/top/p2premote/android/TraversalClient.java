@@ -54,8 +54,7 @@ final class TraversalClient implements AutoCloseable {
             JSONObject error = data.optJSONObject("error");
             signalError = "attempt_cancel".equals(type)
                     ? new AppException(ErrorCodes.ConnectionExecutionPeerCancelled, "对端取消连接")
-                    : new AppException(error == null ? ErrorCodes.NativeDecodeInvalidPayload : error.optString("error_code"),
-                            error == null ? "对端失败消息缺少错误码" : error.optString("message"));
+                    : SignalTransport.peerError(error);
             cancelSignal();
         }
         else if ("punch_signal".equals(type)) {

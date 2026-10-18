@@ -544,8 +544,7 @@ public final class WsConnection {
                 }
                 case "attempt_failed": {
                     JSONObject err = data.optJSONObject("error");
-                    AppException errMsg = new AppException(err == null ? ErrorCodes.NativeDecodeInvalidPayload : err.optString("error_code"),
-                            err == null ? "对端失败消息缺少错误码" : err.optString("message"));
+                    AppException errMsg = SignalTransport.peerError(err);
                     listener.onNotify(type, attemptId, 0, false, 0L, errMsg);
                     break;
                 }

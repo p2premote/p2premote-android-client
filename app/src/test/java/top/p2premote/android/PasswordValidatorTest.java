@@ -6,6 +6,16 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 public class PasswordValidatorTest {
+    @Test public void asciiBoundariesRequireActualLetterAndDigit() {
+        String letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        String digits = "0123456789";
+        for (char c = 0; c < 128; c++) {
+            org.junit.Assert.assertEquals("letter candidate " + (int)c, letters.indexOf(c) >= 0,
+                    PasswordValidator.isValid(c + "11111"));
+            org.junit.Assert.assertEquals("digit candidate " + (int)c, digits.indexOf(c) >= 0,
+                    PasswordValidator.isValid("aaaaa" + c));
+        }
+    }
     @Test
     public void acceptsPasswordContainingLettersAndNumbers() {
         assertTrue(PasswordValidator.isValid("abc123"));
@@ -19,5 +29,7 @@ public class PasswordValidatorTest {
         assertFalse(PasswordValidator.isValid("abcdef"));
         assertFalse(PasswordValidator.isValid("123456"));
         assertFalse(PasswordValidator.isValid("密码密码1"));
+        assertFalse(PasswordValidator.isValid("!!!!!!"));
+        assertFalse(PasswordValidator.isValid("@[\\]^_"));
     }
 }

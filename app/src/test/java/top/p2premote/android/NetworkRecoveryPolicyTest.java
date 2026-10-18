@@ -7,6 +7,69 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class NetworkRecoveryPolicyTest {
+    @Test public void absentFingerprintsNormalizeAndUnchangedObservationPreservesGeneration() {
+        NetworkRecoveryPolicy policy = new NetworkRecoveryPolicy(8_000);
+        assertEquals(NetworkRecoveryPolicy.Observation.BASELINE, policy.observe(null, false, false, 0));
+        assertEquals(NetworkRecoveryPolicy.Observation.UNCHANGED, policy.observe("", false, false, 1));
+        assertEquals(NetworkRecoveryPolicy.Observation.UNCHANGED, policy.observe("none", false, false, 2));
+        assertEquals(0, policy.generation());
+        assertFalse(policy.usable());
+        assertEquals(-1, policy.currentAttempt(0));
+        assertEquals(-1, policy.nextAttempt(0));
+    }
+
+    @Test public void networkChangesWithoutTunnelOnlyUpdateBaseline() {
+        NetworkRecoveryPolicy policy = new NetworkRecoveryPolicy(8_000);
+        policy.observe("wifi", true, false, 0);
+        assertEquals(NetworkRecoveryPolicy.Observation.BASELINE, policy.observe("cell", true, false, 10));
+        assertEquals(0, policy.generation());
+        assertFalse(policy.isCurrent(0));
+        assertTrue(policy.usable());
+        assertEquals(NetworkRecoveryPolicy.Observation.UNCHANGED, policy.confirmUnusable(false, 20));
+        policy.observe("cell", false, false, 30);
+        assertEquals(NetworkRecoveryPolicy.Observation.UNCHANGED, policy.confirmUnusable(false, 40));
+    }
+
+    @Test public void staleConnectionCannotCompleteNewGeneration() {
+        NetworkRecoveryPolicy policy = new NetworkRecoveryPolicy(8_000);
+        policy.observe("wifi", true, true, 0);
+        policy.observe("cell", true, true, 1_000);
+        long old = policy.generation();
+        policy.observe("wifi2", true, true, 2_000);
+        long current = policy.generation();
+        assertEquals(1, policy.nextAttempt(current));
+        policy.markConnected(old);
+        assertTrue(policy.isCurrent(current));
+        assertEquals(1, policy.currentAttempt(current));
+        assertEquals(-1, policy.nextAttempt(old));
+        assertEquals(-1, policy.currentAttempt(old));
+        assertFalse(policy.canStart(current, 9_999));
+        assertTrue(policy.canStart(current, 10_000));
+        policy.markConnected(current);
+        assertFalse(policy.isCurrent(current));
+        assertFalse(policy.canStart(current, 20_000));
+        assertEquals(-1, policy.currentAttempt(current));
+    }
+
+    @Test public void capabilityChangeDuringRecoveryRestartsStableWindowEvenWithoutTunnel() {
+        NetworkRecoveryPolicy policy = new NetworkRecoveryPolicy(8_000);
+        policy.observe("wifi", true, false, 0);
+        policy.observe("cell", true, true, 1_000);
+        long old = policy.generation();
+        assertEquals(NetworkRecoveryPolicy.Observation.RECOVERY_REQUIRED,
+                policy.observe("cell", false, false, 2_000));
+        assertFalse(policy.canStart(policy.generation(), 30_000));
+        assertFalse(policy.isCurrent(old));
+        assertEquals(NetworkRecoveryPolicy.Observation.RECOVERY_REQUIRED,
+                policy.confirmUnusable(false, 3_000));
+        assertEquals(NetworkRecoveryPolicy.Observation.RECOVERY_REQUIRED,
+                policy.observe("cell", true, false, 4_000));
+        long current = policy.generation();
+        assertFalse(policy.canStart(current, 11_999));
+        assertTrue(policy.canStart(current, 12_000));
+        assertEquals(NetworkRecoveryPolicy.Observation.UNCHANGED, policy.observe("cell", true, true, 5_000));
+        assertEquals(current, policy.generation());
+    }
     @Test
     public void initialObservationOnlyEstablishesBaseline() {
         NetworkRecoveryPolicy policy = new NetworkRecoveryPolicy(8_000);

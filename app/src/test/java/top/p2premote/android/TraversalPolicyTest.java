@@ -12,6 +12,24 @@ import java.util.List;
 import static org.junit.Assert.*;
 
 public class TraversalPolicyTest {
+    @Test public void ipv6ClassificationCoversEachPrefixBoundary() {
+        assertFalse(TraversalPolicy.usableIpv6(new byte[4]));
+        for (byte[] prefix : new byte[][]{{0x30, 1, 0x0d, (byte)0xb8},
+                {0x20, 2, 0x0d, (byte)0xb8}, {0x20, 1, 0x0c, (byte)0xb8},
+                {0x20, 1, 0x0d, (byte)0xb9}}) {
+            assertTrue(TraversalPolicy.usableIpv6(java.util.Arrays.copyOf(prefix, 16)));
+        }
+        assertFalse(TraversalPolicy.usableIpv6(java.util.Arrays.copyOf(
+                new byte[]{0x20, 1, 0x0d, (byte)0xb8}, 16)));
+    }
+    @Test public void retryHintsCoverTcp6AndEachNetworkFailureIdentity() {
+        assertTrue(TraversalPolicy.tcpRetryRecommended(true, ErrorCodes.TraversalPunchTimeout, Arrays.asList("tcp6")));
+        for (String code : Arrays.asList(ErrorCodes.TraversalPunchFailed,
+                ErrorCodes.TraversalCandidateSelectionNoUsableCandidate)) {
+            assertTrue(TraversalPolicy.symmetricNatHelpRecommended(code, "symm", "easy"));
+            assertFalse(TraversalPolicy.symmetricNatHelpRecommended(code, "easy", "hard"));
+        }
+    }
     @Test public void sharedProtocolVectorsMatchDesktop() throws Exception {
         JSONObject vectors;
         try (InputStream input = getClass().getClassLoader().getResourceAsStream("traversal-policy-v2.json")) {

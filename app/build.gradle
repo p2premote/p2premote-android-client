@@ -1,5 +1,88 @@
 plugins {
     id "com.android.application"
+    id "jacoco"
+}
+
+// JVM-only compatibility coverage; no emulator or native build is required.
+jacoco { toolVersion = "0.8.12" }
+configurations.matching { it.name in ["jacocoAgent", "jacocoAnt"] }.configureEach {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "org.jacoco") useVersion "0.8.12"
+    }
+}
+tasks.withType(Test).configureEach {
+    jacoco { includes = ["top.p2premote.android.*"] }
+}
+tasks.register("compatibilityCoverage", JacocoReport) {
+    dependsOn "testDebugUnitTest"
+    executionData fileTree(layout.buildDirectory).include("jacoco/testDebugUnitTest.exec")
+    sourceDirectories.setFrom(files("src/main/java"))
+    classDirectories.setFrom(fileTree(layout.buildDirectory.dir("intermediates/javac/debug/classes")) {
+        include "top/p2premote/android/SignalTransport.class"
+    })
+    reports {
+        html.required = true
+        xml.required = true
+    }
+}
+tasks.register("compatibilityCoverageCheck", JacocoCoverageVerification) {
+    dependsOn "compatibilityCoverage"
+    def report = tasks.named("compatibilityCoverage", JacocoReport)
+    executionData.from(report.map { it.executionData })
+    classDirectories.from(report.map { it.classDirectories })
+    violationRules {
+        rule {
+            limit {
+                counter = "BRANCH"
+                minimum = 1.0
+            }
+        }
+    }
+}
+tasks.register("unitTestCoverage", JacocoReport) {
+    dependsOn "testDebugUnitTest"
+    executionData fileTree(layout.buildDirectory).include("jacoco/testDebugUnitTest.exec")
+    sourceDirectories.setFrom(files("src/main/java"))
+    classDirectories.setFrom(fileTree(layout.buildDirectory.dir("intermediates/javac/debug/classes")) {
+        include "top/p2premote/android/**/*.class"
+        exclude '**/BuildConfig.class', '**/R.class', '**/R$*.class'
+    })
+    reports {
+        html.required = true
+        xml.required = true
+    }
+}
+
+// Per-class policy targets supplement, rather than replace, the full application report.
+def corePolicyClasses = ["SignalTransport", "NetworkRecoveryPolicy", "HealthFrameCodec",
+        "TraversalRoundError", "AppException", "ClientVersionPolicy", "PasswordValidator",
+        "VerificationCodeValidator", "TraversalPolicy"]
+tasks.register("corePolicyCoverage", JacocoReport) {
+    dependsOn "testDebugUnitTest"
+    executionData fileTree(layout.buildDirectory).include("jacoco/testDebugUnitTest.exec")
+    sourceDirectories.setFrom(files("src/main/java"))
+    classDirectories.setFrom(fileTree(layout.buildDirectory.dir("intermediates/javac/debug/classes")) {
+        corePolicyClasses.each { include "top/p2premote/android/${it}.class" }
+    })
+    reports {
+        html.required = true
+        xml.required = true
+    }
+}
+tasks.register("corePolicyCoverageCheck", JacocoCoverageVerification) {
+    dependsOn "corePolicyCoverage"
+    def report = tasks.named("corePolicyCoverage", JacocoReport)
+    executionData.from(report.map { it.executionData })
+    classDirectories.from(report.map { it.classDirectories })
+    violationRules {
+        rule {
+            element = "CLASS"
+            limit {
+                counter = "BRANCH"
+                minimum = 0.95
+            }
+        }
+    }
 }
 
 def buildVersionProperty = providers.gradleProperty("p2premoteClientVersion")
@@ -9,6 +92,7 @@ if (!buildVersionProperty.isPresent()) {
 def buildVersionName = buildVersionProperty.get()
 
 android {
+    testCoverage { jacocoVersion = "0.8.12" }
     namespace "top.p2premote.android"
     compileSdk 35
 

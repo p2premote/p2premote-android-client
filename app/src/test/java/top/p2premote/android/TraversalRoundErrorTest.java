@@ -9,6 +9,21 @@ import java.util.Arrays;
 import static org.junit.Assert.*;
 
 public class TraversalRoundErrorTest {
+    @Test public void explicitNullErrorAndMalformedFieldTypesHaveDefinedOutcomes() throws Exception {
+        assertNull(TraversalRoundError.fromPeer(new JSONObject().put("ok", false).put("error", JSONObject.NULL)));
+        for (Object code : new Object[]{7, true, JSONObject.NULL}) {
+            JSONObject frame = new JSONObject().put("ok", false).put("error",
+                    new JSONObject().put("error_code", code).put("message", "detail"));
+            AppException error = assertThrows(AppException.class, () -> TraversalRoundError.fromPeer(frame));
+            assertEquals(ErrorCodes.SignalReceiveInvalidFrame, error.errorCode);
+        }
+        for (Object message : new Object[]{7, true, JSONObject.NULL}) {
+            JSONObject frame = new JSONObject().put("ok", false).put("error",
+                    new JSONObject().put("error_code", ErrorCodes.TraversalPunchTimeout).put("message", message));
+            AppException error = assertThrows(AppException.class, () -> TraversalRoundError.fromPeer(frame));
+            assertEquals(ErrorCodes.SignalReceiveInvalidFrame, error.errorCode);
+        }
+    }
     @Test public void sharedRoundFailuresKeepCodeAndPolicyAcrossTheWire() throws Exception {
         try (InputStream input = getClass().getClassLoader().getResourceAsStream("traversal-round-errors-v1.json")) {
             assertNotNull(input);

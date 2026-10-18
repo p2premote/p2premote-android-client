@@ -17,6 +17,7 @@ public final class VerificationCodeValidatorTest {
         assertFalse(VerificationCodeValidator.isValidEmailCode("12345"));
         assertFalse(VerificationCodeValidator.isValidEmailCode("1234567"));
         assertFalse(VerificationCodeValidator.isValidEmailCode("12345a"));
+        assertFalse(VerificationCodeValidator.isValidEmailCode("/12345"));
         assertFalse(VerificationCodeValidator.isValidEmailCode("１２３４５６"));
     }
 }

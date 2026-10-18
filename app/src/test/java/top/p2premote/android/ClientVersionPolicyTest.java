@@ -6,6 +6,20 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 public class ClientVersionPolicyTest {
+    @Test public void nullEmptyPrefixesAndNondigitBoundariesAreStable() {
+        ClientVersionPolicy empty = new ClientVersionPolicy(null, null, null);
+        org.junit.Assert.assertEquals("", empty.latestVersion);
+        org.junit.Assert.assertEquals("", empty.minSupportedVersion);
+        org.junit.Assert.assertEquals("", empty.releaseNotes);
+        assertFalse(empty.hasUpdate(null));
+        assertFalse(empty.requiresForceUpdate(""));
+        org.junit.Assert.assertEquals(0, ClientVersionPolicy.compare(" vV1.14.0 ", "1.14"));
+        org.junit.Assert.assertEquals(0, ClientVersionPolicy.compare("VV", ""));
+        org.junit.Assert.assertEquals(0, ClientVersionPolicy.compare("1./.0", "1.0"));
+        org.junit.Assert.assertEquals(0, ClientVersionPolicy.compare("1.:.0", "1.0"));
+        org.junit.Assert.assertEquals(0, ClientVersionPolicy.compare("1..0", "1.0"));
+        assertTrue(ClientVersionPolicy.compare(null, "1") < 0);
+    }
     @Test
     public void comparesBuildSuffixAndVersionPrefix() {
         assertFalse(new ClientVersionPolicy("1.7.9", "1.7.9", "")
