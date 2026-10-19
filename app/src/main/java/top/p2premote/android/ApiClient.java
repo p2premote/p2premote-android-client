@@ -40,9 +40,16 @@ final class ApiClient {
             });
 
     private final SessionStore sessionStore;
+    interface ConnectionFactory { HttpURLConnection open(URL url) throws IOException; }
+    private final ConnectionFactory connections;
 
     ApiClient(SessionStore sessionStore) {
+        this(sessionStore, url -> (HttpURLConnection) url.openConnection());
+    }
+
+    ApiClient(SessionStore sessionStore, ConnectionFactory connections) {
         this.sessionStore = sessionStore;
+        this.connections = connections;
     }
 
     ClientVersionPolicy getClientVersionPolicy(String serverUrl) throws Exception {
@@ -427,7 +434,7 @@ final class ApiClient {
                                             long totalTimeoutMs) throws Exception {
         long startedNanos = System.nanoTime();
         URL url = new URL(normalizeServerUrl(serverUrl) + path);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        HttpURLConnection conn = connections.open(url);
         AtomicBoolean deadlineExceeded = new AtomicBoolean(false);
         ScheduledFuture<?> deadline = REQUEST_DEADLINE_EXECUTOR.schedule(() -> {
             deadlineExceeded.set(true);

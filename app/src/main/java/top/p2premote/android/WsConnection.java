@@ -123,8 +123,18 @@ public final class WsConnection {
     }
 
     private WsConnection(Context context) {
-        sessionStore = new SessionStore(context.getApplicationContext());
+        this(new SessionStore(context.getApplicationContext()));
+    }
+
+    WsConnection(SessionStore store) {
+        this(store, Log::d);
+    }
+
+    private final java.util.function.BiConsumer<String,String> debugLog;
+    WsConnection(SessionStore store, java.util.function.BiConsumer<String,String> debugLog) {
+        sessionStore = store;
         apiClient = new ApiClient(sessionStore);
+        this.debugLog = debugLog;
     }
 
     /** 获取进程级单例。 */
@@ -158,7 +168,7 @@ public final class WsConnection {
             return;
         }
         if (!running.compareAndSet(false, true)) {
-            Log.d(TAG, "start ignored: connection lifecycle already running");
+            debugLog.accept(TAG, "start ignored: connection lifecycle already running");
             return;
         }
         cancelReconnect();
@@ -379,7 +389,7 @@ public final class WsConnection {
         PingFrame ping = new PingFrame();
         ping.setPayload(payload);
         socket.sendFrame(ping);
-        Log.d(TAG, "protocol ping sent: sequence=" + sequence);
+        debugLog.accept(TAG, "protocol ping sent: sequence=" + sequence);
     }
 
     private void acceptProtocolPong(ByteBuffer payload) {
@@ -401,7 +411,7 @@ public final class WsConnection {
             updateState(PresenceService.STATE_CONNECTED);
             Log.i(TAG, "first protocol pong received, connection confirmed");
         } else {
-            Log.d(TAG, "protocol pong acknowledged: sequence=" + sequence);
+            debugLog.accept(TAG, "protocol pong acknowledged: sequence=" + sequence);
         }
     }
 
@@ -451,7 +461,7 @@ public final class WsConnection {
                 if (future != null) {
                     future.complete(accepted);
                 } else if (signalFuture == null) {
-                    Log.d(TAG, "p2p_notify_ack unmatched: " + messageId);
+                    debugLog.accept(TAG, "p2p_notify_ack unmatched: " + messageId);
                 }
                 return;
             }
@@ -473,7 +483,7 @@ public final class WsConnection {
                 // 被动端回传（attempt_ready / approval_* / attempt_failed）。data 是嵌套 JSON 字符串。
                 PeerNotifyListener listener = peerNotifyListener;
                 if (listener == null) {
-                    Log.d(TAG, "p2p_notify received without an attempt listener");
+                    debugLog.accept(TAG, "p2p_notify received without an attempt listener");
                     return;
                 }
                 String dataStr = payload.optString("data", "");
@@ -481,9 +491,9 @@ public final class WsConnection {
                 return;
             }
 
-            Log.d(TAG, "signal received: type=" + type);
+            debugLog.accept(TAG, "signal received: type=" + type);
         } catch (Exception e) {
-            Log.d(TAG, "non-json message: " + text);
+            debugLog.accept(TAG, "non-json message: " + text);
         }
     }
 
@@ -549,7 +559,7 @@ public final class WsConnection {
                     break;
                 }
                 default:
-                    Log.d(TAG, "peer notify unknown type: " + type);
+                    debugLog.accept(TAG, "peer notify unknown type: " + type);
             }
         } catch (Exception e) {
             Log.w(TAG, "dispatchPeerNotify parse failed: " + e.getMessage());

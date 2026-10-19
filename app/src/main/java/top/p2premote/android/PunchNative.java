@@ -50,7 +50,7 @@ public final class PunchNative {
         private final String error;
         private final String errorCode;
 
-        private ExchangeResult(boolean ok, String recvData, String error, String code) {
+        ExchangeResult(boolean ok, String recvData, String error, String code) {
             this.ok = ok;
             this.recvData = recvData;
             this.error = error;
@@ -86,7 +86,7 @@ public final class PunchNative {
         private final String error;
         private final String errorCode;
 
-        private TunnelResult(JSONObject json) {
+        TunnelResult(JSONObject json) {
             this.signalFailed = json.optBoolean("signal_failed", false);
             this.network = json.optString("network", "");
             this.ok = json.optBoolean("ok", false);

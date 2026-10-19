@@ -39,7 +39,11 @@ final class SessionStore {
     private final SharedPreferences prefs;
 
     SessionStore(Context context) {
-        this.prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        this(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE));
+    }
+
+    SessionStore(SharedPreferences prefs) {
+        this.prefs = prefs;
     }
 
     /** 读取选中的目标设备 ID，0 表示未选中。 */

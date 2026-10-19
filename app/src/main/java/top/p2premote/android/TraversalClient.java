@@ -19,6 +19,7 @@ final class TraversalClient implements AutoCloseable {
     private final ConnectionPreferences preferences;
     private final Check check;
     private final java.util.function.Supplier<Boolean> ipv6Availability;
+    private final java.util.function.LongSupplier clock;
     private final ArrayBlockingQueue<JSONObject> inbox = new ArrayBlockingQueue<>(64);
     private volatile JSONObject ready;
     private volatile AppException signalError;
@@ -36,8 +37,14 @@ final class TraversalClient implements AutoCloseable {
 
     TraversalClient(WsConnection ws, ApiClient.OpenResult opened, long peer, String attempt,
                     ConnectionPreferences preferences, java.util.function.Supplier<Boolean> ipv6Availability, Check check) {
+        this(ws, opened, peer, attempt, preferences, ipv6Availability, check, android.os.SystemClock::elapsedRealtime);
+    }
+    TraversalClient(WsConnection ws, ApiClient.OpenResult opened, long peer, String attempt,
+                    ConnectionPreferences preferences, java.util.function.Supplier<Boolean> ipv6Availability, Check check,
+                    java.util.function.LongSupplier clock) {
         this.ws = ws; this.opened = opened; this.peer = peer; this.attempt = attempt;
         this.preferences = preferences; this.check = check;
+        this.clock = clock;
         this.ipv6Availability = ipv6Availability;
         ws.setTraversalListener(opened.connectionId, peer, attempt, this::receive, () -> {
             if (wsSignalSelected) { signalError = new AppException(ErrorCodes.SignalSendDisconnected, "signal connection lost"); cancelSignal(); }
@@ -47,7 +54,7 @@ final class TraversalClient implements AutoCloseable {
         return new JSONObject().put("version", TraversalPolicy.VERSION).put("preferences",
                 new JSONObject().put("prefer_ipv6", preferences.ipv6).put("prefer_tcp", preferences.tcp));
     }
-    private void receive(JSONObject data) {
+    void receive(JSONObject data) {
         String type = data.optString("type");
         if ("attempt_ready".equals(type)) ready = data;
         else if ("attempt_failed".equals(type) || "attempt_cancel".equals(type)) {
@@ -129,9 +136,9 @@ final class TraversalClient implements AutoCloseable {
     private JSONObject waitFrame(int round, String kind) throws Exception {
         return waitFrame(round, kind, 12_000);
     }
-    private JSONObject waitFrame(int round, String kind, long timeoutMillis) throws Exception {
-        long end = android.os.SystemClock.elapsedRealtime() + timeoutMillis;
-        while (android.os.SystemClock.elapsedRealtime() < end) {
+    JSONObject waitFrame(int round, String kind, long timeoutMillis) throws Exception {
+        long end = clock.getAsLong() + timeoutMillis;
+        while (clock.getAsLong() < end) {
             check.run();
             if (signalError != null) throw signalError;
             JSONObject frame = inbox.poll(200, TimeUnit.MILLISECONDS);
@@ -275,7 +282,7 @@ final class TraversalClient implements AutoCloseable {
         if (lastError != null) throw lastError;
         throw new AppException(ErrorCodes.TraversalExecutionExhausted, "打洞轮次均未成功：" + String.join(",", attemptedNetworks));
     }
-    private PunchNative.TunnelResult accept(PunchNative.TunnelResult result) {
+    PunchNative.TunnelResult accept(PunchNative.TunnelResult result) {
         if (!result.getLocalNATType().isEmpty()) localNatType = result.getLocalNATType();
         if (!result.getRemoteNATType().isEmpty()) remoteNatType = result.getRemoteNATType();
         if (!result.getNetwork().isEmpty()) lastNetwork = result.getNetwork();
