@@ -18,4 +18,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 [dependencies.p2premote-punch]
 path = "../../p2premote-punch-rs"
 default-features = false
-features = ["legacy-mqtt"]
+features = ["legacy-mqtt", "port-mapping"]

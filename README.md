@@ -21,6 +21,14 @@ The Android client can only initiate connections. It can connect to desktop devi
 
 `PunchNative` provides Exchange, StartUdpTunnel, StopUdpTunnel, and the protect callback.
 
+UPnP is automatic on Wi-Fi, with no setting or UI switch. Discovery briefly holds
+a Wi-Fi multicast lock; every discovery and gateway HTTP socket is protected from
+the VPN. Successful public mappings become ordinary UDP tunnel candidates and
+renew while the connection owns them. Disconnect and service shutdown release
+the mappings and multicast lock. Unsupported routers and non-public router WAN
+addresses fall back to the existing traversal candidates. The manifest declares
+Wi-Fi state and multicast permissions; no additional user configuration is needed.
+
 ### WireGuard Data Plane
 
 `libwgmobile.aar` uses gomobile bindings for the wireguard-go userspace implementation. The AAR is not checked into the repository and must be built locally.

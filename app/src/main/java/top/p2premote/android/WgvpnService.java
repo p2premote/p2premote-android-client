@@ -63,6 +63,30 @@ import top.p2premote.android.PunchNative.TunnelResult;
  * 仅 wgStart 之前失败时才由 cleanupNative 关闭 tunFd，杜绝 double-close。
  */
 public final class WgvpnService extends VpnService {
+    private final DiscoveryMulticastLease upnpDiscovery = new DiscoveryMulticastLease(
+            new DiscoveryMulticastLease.Backend() {
+                private android.net.wifi.WifiManager.MulticastLock lock;
+                @Override public boolean acquire() {
+                    try {
+                        ConnectivityManager manager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                        Network network = currentUnderlyingNetwork();
+                        if (network == null && manager != null) network = manager.getActiveNetwork();
+                        NetworkCapabilities caps = manager == null || network == null ? null : manager.getNetworkCapabilities(network);
+                        if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                                || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return false;
+                        android.net.wifi.WifiManager wifi = (android.net.wifi.WifiManager)
+                                getApplicationContext().getSystemService(WIFI_SERVICE);
+                        if (wifi == null) return false;
+                        if (lock == null) { lock = wifi.createMulticastLock("p2premote-upnp-discovery"); lock.setReferenceCounted(false); }
+                        lock.acquire();
+                        return true;
+                    } catch (RuntimeException e) { Log.w(TAG, "UPnP multicast unavailable", e); return false; }
+                }
+                @Override public void release() {
+                    try { if (lock != null && lock.isHeld()) lock.release(); }
+                    catch (RuntimeException e) { Log.w(TAG, "UPnP multicast release failed", e); }
+                }
+            });
 
     private static final String TAG = "WgvpnService";
 
@@ -273,6 +297,9 @@ public final class WgvpnService extends VpnService {
         ensureChannel();
         // 注册 protect 回调：gonc 创建的 socket 必须 protect，否则 VPN 回环。
         PunchNative.nativeSetProtectCallback(new PunchNative.ProtectCallback() {
+            @Override public boolean setMulticastEnabled(boolean enabled) {
+                return upnpDiscovery.setActive(enabled);
+            }
             @Override
             public boolean protect(int fd) {
                 return protectAndBindSocket(fd);
@@ -374,10 +401,12 @@ public final class WgvpnService extends VpnService {
         try {
             executor.execute(() -> {
                 cleanupNative();
-                PunchNative.nativeSetProtectCallback(null);
+                try { PunchNative.nativeSetProtectCallback(null); }
+                finally { upnpDiscovery.close(); }
             });
         } catch (RejectedExecutionException e) {
             Log.w(TAG, "native cleanup executor already closed", e);
+            upnpDiscovery.close();
         }
         executor.shutdown();
         controlExecutor.shutdownNow();

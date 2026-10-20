@@ -20,6 +20,7 @@ public final class PunchNative {
     /** gonc 创建的 socket 必须经 VpnService.protect(fd)，否则流量被 TUN 回环吞掉。 */
     public interface ProtectCallback {
         boolean protect(int fd);
+        default boolean setMulticastEnabled(boolean enabled) { return false; }
     }
 
     /** 在任何 exchange / 打洞调用之前注册；传 null 清除。 */

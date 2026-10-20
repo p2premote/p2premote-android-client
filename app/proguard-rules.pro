@@ -17,6 +17,10 @@
 # nativeSetProtectCallback 回调由 native 侧反射调用，类/方法名不可混淆。
 -keep class top.p2premote.android.PunchNative { *; }
 -keep class top.p2premote.android.PunchNative$* { *; }
+-keepclassmembers class * implements top.p2premote.android.PunchNative$ProtectCallback {
+    boolean protect(int);
+    boolean setMulticastEnabled(boolean);
+}
 -keepclassmembers class * implements top.p2premote.android.PunchNative$SignalSender {
     boolean enqueue(long, java.lang.String, long);
 }

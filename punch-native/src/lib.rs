@@ -103,6 +103,8 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeSetProtectCa
 ) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if callback.is_null() {
+            block_on_blocking(p2premote_punch::easyp2p::portmap::shutdown())?;
+            p2premote_punch::easyp2p::portmap::set_discovery_hook(None);
             *PROTECT_STATE.lock().unwrap() = None;
             p2premote_punch::easyp2p::socketprotect::set_socket_protect(None);
             return Ok::<(), AppError>(());
@@ -127,6 +129,13 @@ pub extern "system" fn Java_top_p2premote_android_PunchNative_nativeSetProtectCa
                 None => false,
             }
         })));
+        p2premote_punch::easyp2p::portmap::set_discovery_hook(Some(Box::new(|active| {
+            let guard = PROTECT_STATE.lock().unwrap();
+            let Some(state) = guard.as_ref() else { return false; };
+            let Ok(mut env) = state.vm.attach_current_thread() else { return false; };
+            matches!(env.call_method(state.callback.as_obj(), "setMulticastEnabled", "(Z)Z", &[JValue::Bool(if active { 1 } else { 0 })]), Ok(jni::objects::JValueOwned::Bool(ok)) if ok != 0)
+        })));
+        p2premote_punch::easyp2p::portmap::set_enabled(true);
         Ok(())
     }));
     match result {
