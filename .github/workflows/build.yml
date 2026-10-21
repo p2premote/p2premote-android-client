@@ -197,6 +197,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          path: release-source
+
+      - name: Read annotated tag release notes
+        shell: bash
+        run: git -C release-source for-each-ref --format='%(contents)' "$GITHUB_REF" > "$RUNNER_TEMP/release-notes.md"
+
       - name: Download APK artifact
         uses: actions/download-artifact@v4
         with:
@@ -206,4 +215,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: p2pRemote-*.apk
+          body_path: ${{ runner.temp }}/release-notes.md
           generate_release_notes: true
