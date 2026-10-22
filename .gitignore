@@ -4,6 +4,11 @@ build/
 artifacts/
 .gradle/
 local.properties
+signing.properties
+.signing/
+*.keystore
+*.jks
+*.p12
 riperf3-native/target/
 app/src/main/jniLibs/**/*.so
 .idea/

@@ -1,0 +1,6 @@
+# Copy to signing.properties (ignored by Git). Use / in Windows paths.
+# Keep the keystore and passwords backed up outside the repository.
+storeFile=.signing/p2premote-release.p12
+storePassword=YOUR_STORE_PASSWORD
+keyAlias=p2premote
+keyPassword=YOUR_KEY_PASSWORD

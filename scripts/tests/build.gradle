@@ -1,0 +1,32 @@
+apply from: new File(projectDir.parentFile, 'release-config.gradle')
+
+tasks.register('verifyReleaseConfig') {
+    doLast {
+        assert releaseVersionCode('1.14.0-abcdef') == 1014000
+        assert releaseVersionCode('1.14.1') > releaseVersionCode('1.14.0')
+        assert releaseVersionCode('1.15.0') > releaseVersionCode('1.14.999')
+        assert releaseVersionCode('2.0.0') > releaseVersionCode('1.999.999')
+        assert releaseVersionCode('0.0.1') == 1
+        assert releaseVersionCode('2100.0.0') == 2100000000
+        def rejects = { Closure operation ->
+            boolean rejected = false
+            try { operation() } catch (GradleException expected) { rejected = true }
+            assert rejected
+        }
+        ['1.14', '1.14.0-', '1.1000.0', '1.0.1000', '2100.0.1', '0.0.0'].each { version ->
+            rejects { releaseVersionCode(version) }
+        }
+        def valid = [storeFile: buildFile.absolutePath, storePassword: 'test', keyAlias: 'test', keyPassword: 'test']
+        releaseSigning.clear()
+        releaseSigning.putAll(valid)
+        requireReleaseSigning()
+        valid.keySet().each { name ->
+            releaseSigning[name] = ''
+            rejects { requireReleaseSigning() }
+            releaseSigning[name] = valid[name]
+        }
+        releaseSigning.storeFile = new File(projectDir, 'nonexistent-release-key.p12').absolutePath
+        rejects { requireReleaseSigning() }
+        println 'Release version and required signing configuration checks passed.'
+    }
+}

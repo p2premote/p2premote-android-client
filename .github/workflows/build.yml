@@ -13,8 +13,8 @@
 #   2. push tag（如 v1.6.4）：构建带正式版本号的 APK；
 #   3. Actions 页面手动触发（workflow_dispatch），输入三段式版本号。
 #
-# 产物为 Release APK（R8 裁剪），签名沿用 build.gradle 的 debug keystore 配置：
-# runner 上自动生成全新 debug keystore，APK 可安装但与本地构建的不能互相覆盖升级。
+# Release APK 使用固定签名，四个 ANDROID_* 签名 Secrets 必须预先配置。
+# 缺少密钥时停止构建，禁止回退到 runner 自动生成的 debug keystore。
 #
 # 私有仓库注意：github.token 只能读当前仓库。p2premote-punch-rs /
 # p2premote-wg-ffi 任一为私有时，需在 Settings -> Secrets and variables ->
@@ -119,6 +119,30 @@ jobs:
           java-version: '17'
           cache: gradle
 
+      - name: Check release signing and version rules
+        run: ./gradlew -p scripts/tests verifyReleaseConfig --no-daemon
+
+      - name: Restore fixed release keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing signing secret: $name. Configure the fixed release key before building."
+              exit 1
+            fi
+          done
+          umask 077
+          keystore="$RUNNER_TEMP/p2premote-release.p12"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          keytool -list -keystore "$keystore" -storepass:env ANDROID_KEYSTORE_PASSWORD -alias "$ANDROID_KEY_ALIAS" > /dev/null
+          echo "ANDROID_KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
+
       # libwgmobile.aar 按 wg-ffi 提交内容缓存：wg-ffi 不动则整段 gomobile
       # 构建（最慢的一步）直接跳过
       - name: Resolve wg-ffi revision
@@ -176,7 +200,16 @@ jobs:
       # 重命名为 p2pRemote-<版本>-<sha>.apk 放进 artifacts/
       - name: Build APK
         shell: pwsh
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./build.ps1 -v "${{ steps.version.outputs.version }}"
+
+      - name: Remove release keystore
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/p2premote-release.p12"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

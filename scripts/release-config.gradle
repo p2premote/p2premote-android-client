@@ -1,0 +1,39 @@
+// Keystore material is local or supplied through CI secrets, never committed.
+def signingFile = rootProject.file("signing.properties")
+def signingProperties = new Properties()
+if (signingFile.isFile()) {
+    signingFile.withInputStream { signingProperties.load(it) }
+}
+def setting = { String environmentName, String propertyName ->
+    def environmentValue = System.getenv(environmentName)
+    environmentValue != null && !environmentValue.isEmpty()
+            ? environmentValue : signingProperties.getProperty(propertyName)
+}
+ext.releaseSigning = [
+        storeFile: setting("ANDROID_KEYSTORE_PATH", "storeFile"),
+        storePassword: setting("ANDROID_KEYSTORE_PASSWORD", "storePassword"),
+        keyAlias: setting("ANDROID_KEY_ALIAS", "keyAlias"),
+        keyPassword: setting("ANDROID_KEY_PASSWORD", "keyPassword")
+]
+ext.requireReleaseSigning = {
+    def missing = releaseSigning.findAll { key, value -> value == null || value.isEmpty() }.keySet()
+    if (!missing.isEmpty()) {
+        throw new GradleException("Release signing is required: missing ${missing.join(', ')}. Configure signing.properties or ANDROID_KEYSTORE_* / ANDROID_KEY_* environment variables. Debug signing is never used for release APKs.")
+    }
+    if (!rootProject.file(releaseSigning.storeFile).isFile()) {
+        throw new GradleException("Release keystore file does not exist. Check storeFile / ANDROID_KEYSTORE_PATH.")
+    }
+}
+
+ext.releaseVersionCode = { String version ->
+    def match = version =~ /^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$/
+    if (!match.matches()) throw new GradleException("Invalid client version: ${version}")
+    def major = new BigInteger(match[0][1])
+    def minor = new BigInteger(match[0][2])
+    def patch = new BigInteger(match[0][3])
+    def code = major * 1000000 + minor * 1000 + patch
+    if (minor > 999 || patch > 999 || code < 1 || code > 2100000000) {
+        throw new GradleException("Client version exceeds the Android versionCode range: ${version}")
+    }
+    code.intValue()
+}

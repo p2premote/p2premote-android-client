@@ -76,6 +76,30 @@ adb shell am start -n top.p2premote.android/.MainActivity
 
 ## CI 与发布
 
+### 固定正式签名
+
+Release 构建必须使用固定密钥，不再使用 debug 签名。将 `signing.properties.example` 复制为 `signing.properties`，填写密钥路径、密码和别名。本地文件和 `.signing/` 目录已被 Git 忽略。密钥与密码需要另行备份，后续版本始终使用同一份私钥。
+
+GitHub Actions 需要配置四个仓库 Secrets：`ANDROID_KEYSTORE_BASE64`（密钥文件的 Base64）、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS` 和 `ANDROID_KEY_PASSWORD`。构建在临时目录恢复密钥，结束后删除。缺少配置或密钥无效时停止构建。
+
+本机配置完成后，使用已登录的 GitHub CLI 上传 Secrets：
+
+```powershell
+./scripts/configure-github-signing.ps1
+```
+
+本地与 CI 共用同一份密钥。旧版使用临时 debug 私钥且私钥未保留时，用户需要卸载旧版再安装新包；卸载可能清除应用数据。旧 APK 无法恢复原私钥。规则见 [Android 应用签名说明](https://developer.android.com/studio/publish/app-signing)。
+
+`versionCode` 按 `major × 1000000 + minor × 1000 + patch` 生成。minor 和 patch 均限制为 0 至 999，总值须在 Android 支持范围内。后续发布递增三段式版本号；同版本重新构建保持相同的 versionCode，提交号仅用于 versionName。
+
+签名配置与版本号的独立检查不需要 Android SDK 或正式密钥：
+
+```bash
+./gradlew -p scripts/tests verifyReleaseConfig
+```
+
+### 自动构建
+
 推送到 main 分支会触发 GitHub Actions 构建 APK。版本号由 `gradle.properties` 中的 `p2premoteBaseVersion` 和短提交号组成。
 
 推送 `v*` 标签（例如 `v1.0.1`）时，会按标签版本构建并自动发布 Release。APK 可在 [Releases 页面](https://github.com/p2premote/p2premote-android-client/releases)下载。

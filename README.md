@@ -84,6 +84,31 @@ adb shell am start -n top.p2premote.android/.MainActivity
 
 ## CI and Releases
 
+Release builds require a fixed keystore instead of the generated debug key. Copy
+`signing.properties.example` to `signing.properties` and configure the keystore
+path, passwords, and alias. These local files and `.signing/` are ignored by Git;
+back up the key and passwords separately and reuse them for every release.
+
+Configure repository secrets `ANDROID_KEYSTORE_BASE64`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`.
+With GitHub CLI authenticated, `./scripts/configure-github-signing.ps1` uploads
+them from the local configuration. CI restores the key temporarily and removes
+it after the build. Missing signing settings fail the release build.
+
+Users of previous APKs signed with lost temporary keys must uninstall those
+versions before installing the fixed-key release; uninstalling may remove app
+data. Debug builds continue to use the normal debug key.
+
+Android `versionCode` is derived from `major * 1000000 + minor * 1000 + patch`.
+Minor and patch must be at most 999, and the result must fit Android's supported
+range. Increase the semantic version for subsequent releases. Rebuilding the
+same version retains its versionCode. Configuration checks can run without the
+Android SDK or release key:
+
+```bash
+./gradlew -p scripts/tests verifyReleaseConfig
+```
+
 Pushing to the main branch triggers an APK build in GitHub Actions. The version combines `p2premoteBaseVersion` from `gradle.properties` with the short commit hash.
 
 Pushing a `v*` tag, such as `v1.0.1`, builds that version and publishes a release automatically. Download the APK from the [Releases page](https://github.com/p2premote/p2premote-android-client/releases).
