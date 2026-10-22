@@ -237,7 +237,9 @@ jobs:
 
       - name: Read annotated tag release notes
         shell: bash
-        run: git -C release-source for-each-ref --format='%(contents)' "$GITHUB_REF" > "$RUNNER_TEMP/release-notes.md"
+        run: |
+          git -C release-source fetch --force --depth=1 origin "$GITHUB_REF:$GITHUB_REF"
+          git -C release-source for-each-ref --format='%(contents)' "$GITHUB_REF" > "$RUNNER_TEMP/release-notes.md"
 
       - name: Download APK artifact
         uses: actions/download-artifact@v4
@@ -249,4 +251,4 @@ jobs:
         with:
           files: p2pRemote-*.apk
           body_path: ${{ runner.temp }}/release-notes.md
-          generate_release_notes: true
+          generate_release_notes: false
